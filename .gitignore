@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+venv/
+
+# IDE
+.idea/
+
+# Secrets
+.env
+
+# Database
+*.db
