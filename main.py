@@ -1,10 +1,9 @@
-from config import OPENAI_API_KEY, USER_ID, DECIDER_MODEL
+from config import OPENAI_API_KEY, USER_ID
 from db import (
     init_db,
     save_message,
     get_recent_messages,
     rows_to_chat_messages,
-    get_memories,
     get_recent_memories_for_dedup,
     save_memory,
     update_memory,
@@ -13,15 +12,25 @@ from db import (
     get_messages_after_id,
 )
 from idle_manager import IdleManager
-from ai_client import generate_reply, client, generate_nudge
-from memory_extractor import summarize_session_memories, resolve_memory_actions
+from ai_client import client, generate_reply, generate_nudge
+from memory_extractor import (
+    process_memory,
+    summarize_session_memories,
+    resolve_memory_actions,
+)
 from reply_decider import should_reply_now
+
 
 idle_manager = IdleManager(
     idle_seconds=15,
     force_reply_after_seconds=60,
-    summary_after_seconds=5 * 60
+    summary_after_seconds=5 * 60,
 )
+
+
+def _send_assistant_reply(user_id: str, reply: str):
+    print(f"\nAI: {reply}")
+    save_message(user_id, "assistant", reply)
 
 
 def on_user_idle(user_id: str, pending_messages: list[dict], meta: dict):
@@ -36,35 +45,42 @@ def on_user_idle(user_id: str, pending_messages: list[dict], meta: dict):
 
         decision = should_reply_now(
             client=client,
-            model_name=DECIDER_MODEL,
             pending_messages=pending_messages,
-            recent_history=recent_history
+            recent_history=recent_history,
         )
 
         print(f"\n[DECISION] {decision}")
 
         action = decision["action"]
+
         if action == "reply":
+            process_memory(
+                client=client,
+                user_id=user_id,
+                user_text=pending_messages[-1]["content"],
+                recent_messages=recent_history,
+            )
+
             reply = generate_reply(user_id)
-            print(f"\nAI: {reply}")
-            save_message(user_id, "assistant", reply)
+            _send_assistant_reply(user_id, reply)
             idle_manager.clear_pending(user_id)
 
         elif action == "nudge":
             reply = generate_nudge(user_id)
-            print(f"\nAI: {reply}")
-            save_message(user_id, "assistant", reply)
+            _send_assistant_reply(user_id, reply)
             idle_manager.clear_pending(user_id)
 
         else:
-            print(f"\n[WAIT] 暂不回复，等待用户继续输入或 {idle_manager.force_reply_after_seconds} 秒强制回复")
+            print(
+                f"\n[WAIT] 暂不回复，等待用户继续输入或 "
+                f"{idle_manager.force_reply_after_seconds} 秒强制回复"
+            )
 
     except Exception as e:
         print(f"\n[ERROR] 判断失败，默认直接回复: {e}")
         try:
             reply = generate_reply(user_id)
-            print(f"\nAI: {reply}")
-            save_message(user_id, "assistant", reply)
+            _send_assistant_reply(user_id, reply)
         finally:
             idle_manager.clear_pending(user_id)
 
@@ -77,8 +93,7 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
 
     try:
         reply = generate_reply(user_id)
-        print(f"\nAI: {reply}")
-        save_message(user_id, "assistant", reply)
+        _send_assistant_reply(user_id, reply)
     except Exception as e:
         print(f"\n[ERROR] 强制回复失败: {e}")
     finally:
@@ -105,8 +120,7 @@ def on_summary_due(user_id: str, pending_messages: list[dict], meta: dict):
 
         candidates = summarize_session_memories(
             client=client,
-            model_name=DECIDER_MODEL,
-            session_messages=session_messages
+            session_messages=session_messages,
         )
 
         if not candidates:
@@ -118,9 +132,8 @@ def on_summary_due(user_id: str, pending_messages: list[dict], meta: dict):
         existing_memories = get_recent_memories_for_dedup(user_id, limit=30)
         actions = resolve_memory_actions(
             client=client,
-            model_name=DECIDER_MODEL,
             candidates=candidates,
-            existing_memories=existing_memories
+            existing_memories=existing_memories,
         )
 
         for action in actions:
@@ -150,7 +163,7 @@ def on_summary_due(user_id: str, pending_messages: list[dict], meta: dict):
                     content=content,
                     importance=importance,
                     confidence=confidence,
-                    source_message_id=rows[-1][0]
+                    source_message_id=rows[-1][0],
                 )
                 print(f"[MEMORY] insert #{memory_id} -> {content}")
 
@@ -161,7 +174,7 @@ def on_summary_due(user_id: str, pending_messages: list[dict], meta: dict):
                         memory_id=int(existing_memory_id),
                         content=content,
                         importance=importance,
-                        confidence=confidence
+                        confidence=confidence,
                     )
                     print(f"[MEMORY] update #{existing_memory_id} -> {content}")
 
@@ -200,7 +213,7 @@ def main():
             user_text,
             on_user_idle,
             on_force_reply,
-            on_summary_due
+            on_summary_due,
         )
 
 

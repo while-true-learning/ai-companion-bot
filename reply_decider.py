@@ -1,5 +1,6 @@
 import json
 from typing import Optional
+from config import MODEL_DECISION
 
 
 def _extract_json_text(raw: str) -> str:
@@ -47,7 +48,8 @@ def _format_pending(pending_messages: list[dict], max_chars: int = 300) -> str:
     return "\n".join(lines) if lines else "无"
 
 
-def should_reply_now(client, model_name: str, pending_messages: list[dict], recent_history: Optional[list[dict]] = None) -> dict:
+def should_reply_now(client, pending_messages: list[dict], recent_history: Optional[list[dict]] = None) -> dict:
+    model_name = MODEL_DECISION
     if not pending_messages:
         return {
             "should_reply": False,

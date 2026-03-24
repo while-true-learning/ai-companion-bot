@@ -3,6 +3,7 @@ from typing import Optional
 
 
 def detect_current_emotion(client, model_name: str, user_text: str, recent_rows: Optional[list] = None) -> dict:
+    model_name = MODEL_DECISION
     """
     用模型判断用户当前情绪。
 
