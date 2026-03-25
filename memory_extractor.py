@@ -1,6 +1,6 @@
 import json
 
-from config import MODEL_DECISION
+from config import MODEL_DECIDER , MODEL_SUMMARIZE
 from db import (
     get_recent_memories_for_dedup,
     save_memory,
@@ -52,6 +52,8 @@ def _is_memory_score_passed(importance: float, confidence: float) -> bool:
     )
 
 # 模型调用：提取候选记忆
+#candidate：从用户输入里提炼出记忆内容
+#resolve：拿这个记忆内容去和数据库里的旧记忆做决策
 def extract_memory_candidate(client, user_text: str, recent_messages: list[dict]) -> dict | None:
     system_prompt = """
     You are a conversational memory extractor for a long-term companion AI.
@@ -134,10 +136,6 @@ def extract_memory_candidate(client, user_text: str, recent_messages: list[dict]
 
     Examples include:
     例如：
-
-    - “请记住我的名字叫 cappy”
-    - “我叫 cappy”
-    - “以后叫我 cappy”
     - “记住我不喜欢被打断”
     - “请记住我更喜欢你直接一点”
 
@@ -242,7 +240,7 @@ def extract_memory_candidate(client, user_text: str, recent_messages: list[dict]
     })
 
     resp = client.chat.completions.create(
-        model=MODEL_DECISION,
+        model=MODEL_DECIDER,
         messages=messages,
         temperature=0.2,
         response_format={"type": "json_object"},
@@ -336,7 +334,7 @@ def summarize_session_memories(
     """.strip()
 
     resp = client.chat.completions.create(
-        model=MODEL_DECISION,
+        model=MODEL_SUMMARIZE,
         messages=[
             {"role": "system", "content": system_prompt},
             {
@@ -403,7 +401,7 @@ def resolve_memory_actions(
 """.strip()
 
     resp = client.chat.completions.create(
-        model=MODEL_DECISION,
+        model=MODEL_SUMMARIZE,
         messages=[
             {"role": "system", "content": system_prompt},
             {

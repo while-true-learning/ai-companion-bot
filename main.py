@@ -1,29 +1,29 @@
 from config import OPENAI_API_KEY, USER_ID
+from emotion import process_emotion, get_emotion_summary
+from decider import decide_use_emotion_summary
 from db import (
     init_db,
     save_message,
-    get_recent_messages,
-    rows_to_chat_messages,
     get_recent_memories_for_dedup,
     save_memory,
     update_memory,
     get_last_summarized_message_id,
     set_last_summarized_message_id,
     get_messages_after_id,
+    rows_to_chat_messages,
+    get_recent_messages,
 )
 from idle_manager import IdleManager
-from ai_client import client, generate_reply, generate_nudge
+from ai_client import client, generate_reply
 from memory_extractor import (
-    process_memory,
     summarize_session_memories,
     resolve_memory_actions,
+    process_memory,
 )
-from reply_decider import should_reply_now
 
 
 idle_manager = IdleManager(
-    idle_seconds=15,
-    force_reply_after_seconds=60,
+    force_reply_after_seconds=15,
     summary_after_seconds=5 * 60,
 )
 
@@ -32,58 +32,11 @@ def _send_assistant_reply(user_id: str, reply: str):
     print(f"\nAI: {reply}")
     save_message(user_id, "assistant", reply)
 
-
-def on_user_idle(user_id: str, pending_messages: list[dict], meta: dict):
-    print(f"\n[IDLE] 用户 {user_id} 已静默 {idle_manager.idle_seconds} 秒")
-    print("[PENDING MESSAGES]")
-    for msg in pending_messages:
-        print("-", msg["content"])
-
-    try:
-        recent_rows = get_recent_messages(user_id, limit=12)
-        recent_history = rows_to_chat_messages(recent_rows)
-
-        decision = should_reply_now(
-            client=client,
-            pending_messages=pending_messages,
-            recent_history=recent_history,
-        )
-
-        print(f"\n[DECISION] {decision}")
-
-        action = decision["action"]
-
-        if action == "reply":
-            process_memory(
-                client=client,
-                user_id=user_id,
-                user_text=pending_messages[-1]["content"],
-                recent_messages=recent_history,
-            )
-
-            reply = generate_reply(user_id)
-            _send_assistant_reply(user_id, reply)
-            idle_manager.clear_pending(user_id)
-
-        elif action == "nudge":
-            reply = generate_nudge(user_id)
-            _send_assistant_reply(user_id, reply)
-            idle_manager.clear_pending(user_id)
-
-        else:
-            print(
-                f"\n[WAIT] 暂不回复，等待用户继续输入或 "
-                f"{idle_manager.force_reply_after_seconds} 秒强制回复"
-            )
-
-    except Exception as e:
-        print(f"\n[ERROR] 判断失败，默认直接回复: {e}")
-        try:
-            reply = generate_reply(user_id)
-            _send_assistant_reply(user_id, reply)
-        finally:
-            idle_manager.clear_pending(user_id)
-
+def merge_pending_messages(pending_messages: list[dict]) -> str:
+    return " ".join(
+        (msg.get("content", "") or "").strip()
+        for msg in pending_messages
+    ).strip()
 
 def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
     print(f"\n[FORCE REPLY] 用户 {user_id} 已达到 {idle_manager.force_reply_after_seconds} 秒等待上限")
@@ -92,10 +45,60 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
         print("-", msg["content"])
 
     try:
-        reply = generate_reply(user_id)
+        # 1. 短期记忆（recent history）
+        recent_rows = get_recent_messages(user_id, limit=12)
+        recent_history = rows_to_chat_messages(recent_rows)
+
+        # 2. 合并用户输入
+        merged_user_text = merge_pending_messages(pending_messages)
+
+        # 3. 情绪记录（每轮一次）
+        if merged_user_text:
+            emotion_result = process_emotion(
+                client=client,
+                user_id=user_id,
+                user_text=merged_user_text,
+                recent_rows=recent_rows,
+                trigger_message_id=recent_rows[-1][0] if recent_rows else None,
+            )
+            print(f"[EMOTION] {emotion_result}")
+
+        # 4. 记忆提取并记录（每轮一次）
+        if merged_user_text:
+            process_memory(
+                client=client,
+                user_id=user_id,
+                user_text=merged_user_text,
+                recent_messages=recent_history,
+            )
+        # 5. 判断是否需要更复杂的情绪
+        emotion_summary = None
+        if merged_user_text:
+            decision = decide_use_emotion_summary(
+                client=client,
+                user_text=merged_user_text,
+                recent_rows=recent_rows,
+            )
+            print(f"[EMOTION SUMMARY DECIDER] {decision}")
+
+            if decision["use_emotion_summary"]:
+                emotion_summary = get_emotion_summary(
+                    client=client,
+                    user_id=user_id,
+                    limit=30,
+                    force_refresh=False,
+                )
+                print(f"[EMOTION SUMMARY] loaded -> {emotion_summary.get('summary_text', '')}")
+
+        # 6. 生成回复
+        reply = generate_reply(user_id, emotion_summary=emotion_summary)
+
+        # 7. 输出 + 入库
         _send_assistant_reply(user_id, reply)
+
     except Exception as e:
         print(f"\n[ERROR] 强制回复失败: {e}")
+
     finally:
         idle_manager.clear_pending(user_id)
 
@@ -205,13 +208,11 @@ def main():
             idle_manager.cancel_timer(USER_ID)
             print("Bye.")
             break
-
         save_message(USER_ID, "user", user_text)
 
         idle_manager.add_user_message(
             USER_ID,
             user_text,
-            on_user_idle,
             on_force_reply,
             on_summary_due,
         )
