@@ -11,17 +11,20 @@ ALLOWED_PRIMARY_EMOTIONS = {
 }
 ALLOWED_SECONDARY_EMOTIONS = ALLOWED_PRIMARY_EMOTIONS | {"none"}
 
-
+# 获取当前时间（ISO格式）
+# 用于所有数据库时间字段统一格式
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
-
+# 获取数据库连接
+# 统一设置 row_factory，方便后续转 dict
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-
+# 初始化数据库结构（所有表 + 索引）
+# 只在程序启动时调用一次
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
@@ -68,6 +71,29 @@ def init_db():
     ON memories(user_id, memory_type)
     """)
 
+    #interaction_signals 这次互动是什么性质
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS interaction_signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        trigger_message_id INTEGER,
+        openness REAL NOT NULL DEFAULT 0.0,
+        warmth REAL NOT NULL DEFAULT 0.0,
+        engagement REAL NOT NULL DEFAULT 0.0,
+        reliance REAL NOT NULL DEFAULT 0.0,
+        respect REAL NOT NULL DEFAULT 0.0,
+        rejection REAL NOT NULL DEFAULT 0.0,
+        confidence REAL NOT NULL DEFAULT 0.0,
+        reason_summary TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(trigger_message_id) REFERENCES messages(id)
+    )
+    """)
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_interaction_signals_user_id_id
+    ON interaction_signals(user_id, id DESC)
+    """)
+
     # 关系状态表：每个 user 一行
     cur.execute("""
     CREATE TABLE IF NOT EXISTS relationship_state (
@@ -78,28 +104,6 @@ def init_db():
         dependency REAL NOT NULL DEFAULT 0.0,
         updated_at TEXT NOT NULL
     )
-    """)
-
-    # 互动事件表：记录为什么变动
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS interaction_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT NOT NULL,
-        trigger_message_id INTEGER,
-        event_type TEXT NOT NULL,
-        payload_json TEXT,
-        delta_familiarity REAL NOT NULL DEFAULT 0.0,
-        delta_trust REAL NOT NULL DEFAULT 0.0,
-        delta_affection REAL NOT NULL DEFAULT 0.0,
-        delta_dependency REAL NOT NULL DEFAULT 0.0,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(trigger_message_id) REFERENCES messages(id)
-    )
-    """)
-
-    cur.execute("""
-    CREATE INDEX IF NOT EXISTS idx_interaction_events_user_id_id
-    ON interaction_events(user_id, id DESC)
     """)
 
     # 记忆总结游标：记录上次总结做到哪条 message
@@ -150,10 +154,26 @@ def init_db():
     )
     """)
 
+    #会话总结
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS session_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        topics TEXT NOT NULL,
+        emotional_tone TEXT,
+        importance REAL NOT NULL DEFAULT 0.5,
+        start_message_id INTEGER,
+        end_message_id INTEGER,
+        created_at TEXT NOT NULL
+    )
+    """)
+
     conn.commit()
     conn.close()
 
-
+# 保存一条对话消息（user / assistant / system）
+# 返回 message_id（后续可用于关联 memory / emotion / signals）
 def save_message(user_id: str, role: str, content: str) -> int:
     allowed_roles = {"user", "assistant", "system"}
     if role not in allowed_roles:
@@ -182,8 +202,9 @@ def save_message(user_id: str, role: str, content: str) -> int:
     finally:
         conn.close()
 
-
-def get_recent_messages(user_id: str, limit: int = 12):
+# 获取最近 N 条消息（用于上下文）
+# 返回 list[(id, role, content, created_at)]
+def get_recent_messages(user_id: str, limit: int = 200):
     if not isinstance(limit, int) or limit <= 0:
         raise ValueError("limit must be a positive integer")
 
@@ -205,7 +226,7 @@ def get_recent_messages(user_id: str, limit: int = 12):
     finally:
         conn.close()
 
-
+# 获取某条消息之后的新消息（用于增量处理）
 def get_messages_after_id(user_id: str, last_message_id: int):
     conn = get_conn()
     try:
@@ -221,7 +242,7 @@ def get_messages_after_id(user_id: str, last_message_id: int):
     finally:
         conn.close()
 
-
+# 转换为 LLM 输入格式（chat messages）
 def rows_to_chat_messages(rows):
     messages = []
     for _id, role, content, created_at in rows:
@@ -232,7 +253,8 @@ def rows_to_chat_messages(rows):
             })
     return messages
 
-
+# 保存一条结构化记忆
+# memory_type: preference / trait / event / pattern
 def save_memory(
     user_id: str,
     memory_type: str,
@@ -273,7 +295,7 @@ def save_memory(
     finally:
         conn.close()
 
-
+# 更新已有记忆（支持部分字段更新）
 def update_memory(
     memory_id: int,
     content: str,
@@ -317,7 +339,7 @@ def update_memory(
     finally:
         conn.close()
 
-
+# 获取重要记忆（用于 prompt）
 def get_memories(user_id: str, limit: int = 10):
     conn = get_conn()
     try:
@@ -336,7 +358,7 @@ def get_memories(user_id: str, limit: int = 10):
     finally:
         conn.close()
 
-
+# 获取最近记忆（用于去重 / merge）
 def get_recent_memories_for_dedup(user_id: str, limit: int = 30):
     conn = get_conn()
     try:
@@ -354,7 +376,7 @@ def get_recent_memories_for_dedup(user_id: str, limit: int = 30):
     finally:
         conn.close()
 
-
+# 获取用户当前关系状态
 def get_relationship_state(user_id: str) -> dict:
     conn = get_conn()
     try:
@@ -397,7 +419,7 @@ def get_relationship_state(user_id: str) -> dict:
     finally:
         conn.close()
 
-
+# 插入或更新关系状态
 def upsert_relationship_state(
     user_id: str,
     familiarity: float,
@@ -435,86 +457,6 @@ def upsert_relationship_state(
         ))
 
         conn.commit()
-    finally:
-        conn.close()
-
-
-def save_interaction_event(
-    user_id: str,
-    event_type: str,
-    trigger_message_id: int | None = None,
-    payload: dict | None = None,
-    delta_familiarity: float = 0.0,
-    delta_trust: float = 0.0,
-    delta_affection: float = 0.0,
-    delta_dependency: float = 0.0
-) -> int:
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-
-        cur.execute("""
-        INSERT INTO interaction_events (
-            user_id,
-            trigger_message_id,
-            event_type,
-            payload_json,
-            delta_familiarity,
-            delta_trust,
-            delta_affection,
-            delta_dependency,
-            created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            user_id,
-            trigger_message_id,
-            event_type,
-            json.dumps(payload, ensure_ascii=False) if payload is not None else None,
-            float(delta_familiarity),
-            float(delta_trust),
-            float(delta_affection),
-            float(delta_dependency),
-            now_iso()
-        ))
-
-        event_id = cur.lastrowid
-        conn.commit()
-        return event_id
-    finally:
-        conn.close()
-
-
-def get_recent_interaction_events(user_id: str, limit: int = 20):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-
-        cur.execute("""
-        SELECT id, user_id, trigger_message_id, event_type, payload_json,
-               delta_familiarity, delta_trust, delta_affection, delta_dependency,
-               created_at
-        FROM interaction_events
-        WHERE user_id = ?
-        ORDER BY id DESC
-        LIMIT ?
-        """, (user_id, limit))
-
-        rows = cur.fetchall()
-
-        result = []
-        for row in rows:
-            item = dict(row)
-            if item["payload_json"]:
-                try:
-                    item["payload"] = json.loads(item["payload_json"])
-                except json.JSONDecodeError:
-                    item["payload"] = None
-            else:
-                item["payload"] = None
-            result.append(item)
-
-        return result
     finally:
         conn.close()
 
@@ -785,7 +727,7 @@ def get_emotion_summary_row(user_id: str) -> dict | None:
     finally:
         conn.close()
 
-
+# 判断情绪总结是否过期
 def emotion_summary_is_stale(user_id: str) -> bool:
     summary = get_emotion_summary_row(user_id)
     latest_event = get_latest_emotion_event(user_id)
@@ -797,6 +739,157 @@ def emotion_summary_is_stale(user_id: str) -> bool:
         return False
 
     return int(latest_event["id"]) > int(summary.get("source_last_event_id", 0))
+
+# 工具函数：限制 float 在范围内
+def _clamp_float(value, min_value: float, max_value: float, default: float = 0.0) -> float:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, min(max_value, value))
+
+# 保存一次互动信号（核心输入层）
+def save_interaction_signal(
+    user_id: str,
+    trigger_message_id: int | None = None,
+    openness: float = 0.0,      # openness: 用户是否开放表达
+    warmth: float = 0.0,        # warmth: 是否有情感温度
+    engagement: float = 0.0,    # engagement: 是否持续互动
+    reliance: float = 0.0,      # reliance: 是否依赖AI
+    respect: float = 0.0,       # respect: 是否尊重AI
+    rejection: float = 0.0,     # rejection: 是否拒绝/疏远
+    confidence: float = 0.0,
+    reason_summary: str = ""
+) -> int:
+    user_id = str(user_id).strip()
+    if not user_id:
+        raise ValueError("user_id cannot be empty")
+
+    openness = _clamp_float(openness, 0.0, 1.0)
+    warmth = _clamp_float(warmth, 0.0, 1.0)
+    engagement = _clamp_float(engagement, 0.0, 1.0)
+    reliance = _clamp_float(reliance, 0.0, 1.0)
+    respect = _clamp_float(respect, 0.0, 1.0)
+    rejection = _clamp_float(rejection, 0.0, 1.0)
+    confidence = _clamp_float(confidence, 0.0, 1.0)
+
+    if trigger_message_id is not None:
+        trigger_message_id = int(trigger_message_id)
+
+    reason_summary = str(reason_summary or "").strip()[:120]
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+        INSERT INTO interaction_signals (
+            user_id,
+            trigger_message_id,
+            openness,
+            warmth,
+            engagement,
+            reliance,
+            respect,
+            rejection,
+            confidence,
+            reason_summary,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            trigger_message_id,
+            openness,
+            warmth,
+            engagement,
+            reliance,
+            respect,
+            rejection,
+            confidence,
+            reason_summary,
+            now_iso()
+        ))
+        signal_id = cur.lastrowid
+        conn.commit()
+        return signal_id
+    finally:
+        conn.close()
+
+# 获取最近20条互动信号
+def get_recent_interaction_signals(user_id: str, limit: int = 20):
+    if not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit must be a positive integer")
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT id, user_id, trigger_message_id,
+               openness, warmth, engagement,
+               reliance, respect, rejection,
+               confidence, reason_summary, created_at
+        FROM interaction_signals
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """, (user_id, limit))
+
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+# 获取最新一条互动信号
+def get_latest_interaction_signal(user_id: str) -> dict | None:
+    rows = get_recent_interaction_signals(user_id, limit=1)
+    return rows[0] if rows else None
+
+def save_session_summary(
+    user_id: str,
+    summary: str,
+    topics: list[str] | None = None,
+    emotional_tone: str = "",
+    importance: float = 0.5,
+    start_message_id: int | None = None,
+    end_message_id: int | None = None,
+) -> int:
+    topics = topics or []
+    importance = max(0.0, min(1.0, float(importance)))
+    ts = now_iso()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO session_summaries (
+            user_id,
+            summary,
+            topics,
+            emotional_tone,
+            importance,
+            start_message_id,
+            end_message_id,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            summary.strip(),
+            json.dumps(topics, ensure_ascii=False),
+            emotional_tone.strip(),
+            importance,
+            start_message_id,
+            end_message_id,
+            ts,
+        ),
+    )
+
+    conn.commit()
+    summary_id = cur.lastrowid
+    conn.close()
+    return summary_id
 
 
 def get_context_bundle(

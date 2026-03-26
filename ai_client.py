@@ -1,5 +1,5 @@
 from openai import OpenAI
-from config import OPENAI_API_KEY, MODEL_MAIN, CONTEXT_LIMIT
+from config import OPENAI_API_KEY, MODEL_REPLY, CONTEXT_LIMIT
 from db import get_recent_messages, rows_to_chat_messages
 
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -62,7 +62,7 @@ def generate_reply(user_id: str, emotion_summary: dict | None = None) -> str:
     messages.extend(history)
 
     response = client.chat.completions.create(
-        model=MODEL_MAIN,
+        model=MODEL_REPLY,
         messages=messages,
         temperature=0.9
     )

@@ -2,7 +2,7 @@ import json
 import re
 from typing import Optional
 
-from config import MODEL_SUMMARIZE , MODEL_DECIDER
+from config import MODEL_SUMMARIZE, MODEL_DECIDER
 from db import (
     save_emotion_event,
     get_recent_emotion_events,
@@ -54,6 +54,46 @@ def format_recent_rows(recent_rows: Optional[list], max_items: int = 6) -> str:
     return "\n".join(lines) if lines else "无"
 
 
+def format_pending_messages(pending_messages: Optional[list]) -> str:
+    if not pending_messages:
+        return "无"
+
+    lines = []
+    for msg in pending_messages:
+        try:
+            role = str(msg.get("role", "user")).strip()
+            content = str(msg.get("content", "") or "").strip()
+            created_at = str(msg.get("created_at", "") or "").strip()
+
+            if not content:
+                continue
+
+            if created_at:
+                lines.append(f"[{created_at}] {role}: {content}")
+            else:
+                lines.append(f"{role}: {content}")
+        except Exception:
+            continue
+
+    return "\n".join(lines) if lines else "无"
+
+
+def merge_pending_text(pending_messages: Optional[list]) -> str:
+    if not pending_messages:
+        return ""
+
+    parts = []
+    for msg in pending_messages:
+        try:
+            content = str(msg.get("content", "") or "").strip()
+            if content:
+                parts.append(content)
+        except Exception:
+            continue
+
+    return " ".join(parts).strip()
+
+
 def extract_json_text(raw: str) -> str:
     raw = raw.strip()
     try:
@@ -71,16 +111,23 @@ def extract_json_text(raw: str) -> str:
 
 def detect_current_emotion(
     client,
-    user_text: str,
+    pending_messages: list[dict],
     recent_rows: Optional[list] = None,
 ) -> dict:
     model_name = MODEL_DECIDER
-    context_text = format_recent_rows(recent_rows)
+
+    pending_text = merge_pending_text(pending_messages)
+    if not pending_text:
+        return default_emotion_result("当前轮 pending 为空")
+
+    pending_context_text = format_pending_messages(pending_messages)
+    history_text = format_recent_rows(recent_rows)
 
     system_prompt = """
 你是一个情绪分析器。
-你的任务是根据用户当前输入，并结合少量对话上下文，判断用户当前最主要的情绪状态。
-判断时必须以“当前输入”为主，上下文只用于辅助，不能因为历史情绪而夸大当前情绪。
+你的任务是根据用户当前这一轮 pending 输入，并结合少量数据库历史对话，判断用户当前最主要的情绪状态。
+
+判断时必须以“当前 pending 轮内容”为主，数据库历史只用于辅助，不能因为历史情绪而夸大当前情绪。
 
 你必须只输出 JSON，不能输出任何额外文字。
 
@@ -107,11 +154,14 @@ def detect_current_emotion(
 """.strip()
 
     user_prompt = f"""
-最近对话上下文：
-{context_text}
+数据库中的历史对话（不包括本轮）：
+{history_text}
 
-当前用户输入：
-{user_text}
+当前 pending 轮内容（本轮重点）：
+{pending_context_text}
+
+当前轮合并后的核心文本：
+{pending_text}
 """.strip()
 
     try:
@@ -181,21 +231,21 @@ def detect_current_emotion(
 def process_emotion(
     client,
     user_id: str,
-    user_text: str,
+    pending_messages: list[dict],
     recent_rows: Optional[list] = None,
     trigger_message_id: int | None = None,
-    model_name: Optional[str] = None
 ) -> dict:
+    pending_text = merge_pending_text(pending_messages)
+
     result = detect_current_emotion(
         client=client,
-        user_text=user_text,
+        pending_messages=pending_messages,
         recent_rows=recent_rows,
-        model_name=model_name
     )
 
     save_emotion_event(
         user_id=user_id,
-        source_text=user_text,
+        source_text=pending_text,
         primary_emotion=result["primary_emotion"],
         secondary_emotion=result["secondary_emotion"],
         fine_grained=result["fine_grained"],
@@ -207,14 +257,12 @@ def process_emotion(
 
     return result
 
-
 def build_emotion_summary(
     client,
     user_id: str,
     limit: int = 30,
-    model_name: Optional[str] = None
 ) -> dict:
-    model_name = model_name or MODEL_SUMMARIZE
+    model_name = MODEL_SUMMARIZE
     events = get_recent_emotion_events(user_id, limit=limit)
 
     if not events:
@@ -368,7 +416,6 @@ def get_emotion_summary(
     user_id: str,
     limit: int = 30,
     force_refresh: bool = False,
-    model_name: Optional[str] = None
 ) -> dict:
     cached = get_emotion_summary_row(user_id)
 
@@ -377,7 +424,6 @@ def get_emotion_summary(
             client=client,
             user_id=user_id,
             limit=limit,
-            model_name=model_name
         )
 
     return {

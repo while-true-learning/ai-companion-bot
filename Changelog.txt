@@ -1,0 +1,7 @@
+已重构 memory 系统与情感模拟模块
+当前轮候选记忆改为仅基于 pending_messages 提取
+统一记忆去重与写入流程 关闭 importance / confidence 阈值筛选。
+同时新增 interaction signal 提取与 relationship state 更新机制：基于 pending + 短历史窗口提取 openness、warmth、engagement、reliance、respect、rejection 等互动信号，并通过加权融合持续更新 familiarity、trust、affection、dependency，实现长期关系状态的动态演化。整体系统现在形成“当前轮感知 + 长期记忆 + 关系状态”三层结构。
+
+本次更新完成了会话级总结链路的初步接入，并修正了主流程中的多处结构问题。主流程现在区分了“本轮 pending 分析”和“已入库消息总结”两条路径：在强制回复阶段，relation、emotion、memory 等模块先基于 pending 消息执行分析，再统一写入数据库并生成回复；在 summary 阶段，则只读取已经入库的 messages 进行会话级总结，不再混用长期记忆去重逻辑。新增了 summarize_conversation_session()，用于将整段会话整理为 session record，输出 summary、topics、emotional tone 和 importance；
+添加了 save_session_summary 对应的落库接口。整体上，这次更新把“长期记忆提取”和“会话级总结”正式分层
