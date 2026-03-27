@@ -8,16 +8,15 @@ from db import (
     get_last_summarized_message_id,
     set_last_summarized_message_id,
     get_messages_after_id,
-    rows_to_chat_messages,
+    save_interaction_signal,
+    save_emotion_event,
     get_recent_messages,
     save_session_summary,
 )
 from idle_manager import IdleManager
 from ai_client import client, generate_reply
 from summarize import summarize_conversation_session
-from memory_extractor import (resolve_memory_actions,
-    process_memory,
-)
+from memory_extractor import (process_memory,apply_memory_actions)
 
 
 idle_manager = IdleManager(
@@ -56,11 +55,6 @@ def save_pending_user_messages(user_id: str, pending_messages: list[dict]) -> in
 
     return last_message_id
 
-# 强制回复回调：
-# 1. 本轮 pending 尚未入库
-# 2. 先用 pending + 历史做关系/情绪/记忆分析
-# 3. 再把 pending 写入数据库
-# 4. 再生成 reply
 def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
     print(f"\n[FORCE REPLY] 用户 {user_id} 已达到 {idle_manager.force_reply_after_seconds} 秒等待上限")
     print("[PENDING MESSAGES]")
@@ -72,38 +66,31 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
         if not merged_user_text:
             return
 
-        # 这里取到的是“本轮之前”的历史，因为 pending 还没写入 messages 表
         recent_rows = get_recent_messages(user_id, limit=8)
-        recent_history = rows_to_chat_messages(recent_rows)
 
-        # 1. interaction signal + relationship_state
+        # 1. 先分析，不写库
         relation_result = process_interaction_signal(
             client=client,
             user_id=user_id,
             pending_messages=pending_messages,
-            trigger_message_id=None,   # 当前轮尚未入库，先不绑定 message_id
         )
         print(f"[INTERACTION SIGNAL] {relation_result['signal']}")
         print(f"[RELATIONSHIP STATE] {relation_result['relationship_state']}")
 
-        # 2. 情绪记录（按本轮合并文本）
         emotion_result = process_emotion(
             client=client,
             user_id=user_id,
             pending_messages=pending_messages,
             recent_rows=recent_rows,
-            trigger_message_id=None,   # 当前轮尚未入库，先不绑定
         )
         print(f"[EMOTION] {emotion_result}")
 
-        # 3. 记忆提取（按本轮合并文本）
-        process_memory(
+        memory_actions = process_memory(
             client=client,
             user_id=user_id,
             pending_messages=pending_messages,
         )
 
-        # 4. 判断是否需要更复杂的情绪总结
         emotion_summary = None
         decision = decide_use_emotion_summary(
             client=client,
@@ -121,15 +108,46 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
             )
             print(f"[EMOTION SUMMARY] loaded -> {emotion_summary.get('summary_text', '')}")
 
-        # 5. 现在再把本轮 pending 用户消息写入数据库
+        # 2. 再把 pending 写入 messages
         last_user_message_id = save_pending_user_messages(user_id, pending_messages)
         print(f"[PENDING SAVED] last_user_message_id={last_user_message_id}")
 
-        # 6. 生成回复
-        # 这时 generate_reply 从 db 里看到的历史已经包含本轮用户输入
-        reply = generate_reply(user_id, emotion_summary=emotion_summary)
+        # 3. 现在才正式写 interaction_signal / emotion_event
+        if last_user_message_id is not None:
+            signal = relation_result["signal"]
+            save_interaction_signal(
+                user_id=user_id,
+                trigger_message_id=last_user_message_id,
+                openness=signal["openness"],
+                warmth=signal["warmth"],
+                engagement=signal["engagement"],
+                reliance=signal["reliance"],
+                respect=signal["respect"],
+                rejection=signal["rejection"],
+                confidence=signal["confidence"],
+                reason_summary=signal["reason_summary"],
+            )
 
-        # 7. 输出 + assistant 入库
+            save_emotion_event(
+                user_id=user_id,
+                trigger_message_id=last_user_message_id,
+                source_text=merged_user_text,
+                primary_emotion=emotion_result["primary_emotion"],
+                secondary_emotion=emotion_result["secondary_emotion"],
+                fine_grained=emotion_result["fine_grained"],
+                intensity=emotion_result["intensity"],
+                confidence=emotion_result["confidence"],
+                reason_summary=emotion_result["reason"],
+            )
+        apply_memory_actions(
+            user_id=user_id,
+            actions=memory_actions,
+            source_message_id=last_user_message_id,
+            log_prefix="[MEMORY]",
+        )
+
+        # 4. 生成回复
+        reply = generate_reply(user_id, emotion_summary=emotion_summary)
         _send_assistant_reply(user_id, reply)
 
     except Exception as e:
@@ -188,6 +206,14 @@ def on_summary_due(user_id: str, pending_messages: list[dict], meta: dict):
         last_message_id = rows[-1][0]
         set_last_summarized_message_id(user_id, last_message_id)
         print(f"[SUMMARY] 完成，总结边界更新到 message_id={last_message_id}")
+
+        emotion_summary = get_emotion_summary(
+            client=client,
+            user_id=user_id,
+            limit=30,
+            force_refresh=True,
+        )
+        print("[EMOTION SUMMARY @ 5MIN]", emotion_summary)
 
     except Exception as e:
         print(f"\n[ERROR] 会话总结失败: {e}")

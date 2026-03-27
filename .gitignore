@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 
+#DB_Backup
+backup/
+
 # Virtual env
 venv/
 

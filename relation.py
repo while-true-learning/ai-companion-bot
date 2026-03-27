@@ -328,25 +328,11 @@ def process_interaction_signal(
     client,
     user_id: str,
     pending_messages: list[dict],
-    trigger_message_id: int | None = None,
 ) -> dict:
     signal = extract_interaction_signal_candidate(
         client=client,
         user_id=user_id,
         pending_messages=pending_messages,
-    )
-
-    save_interaction_signal(
-        user_id=user_id,
-        trigger_message_id=trigger_message_id,
-        openness=signal["openness"],
-        warmth=signal["warmth"],
-        engagement=signal["engagement"],
-        reliance=signal["reliance"],
-        respect=signal["respect"],
-        rejection=signal["rejection"],
-        confidence=signal["confidence"],
-        reason_summary=signal["reason_summary"],
     )
 
     new_state = apply_interaction_signal_to_relationship(

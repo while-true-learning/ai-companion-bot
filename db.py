@@ -1,35 +1,74 @@
+# db.py
 import json
 import sqlite3
 from datetime import datetime
 from config import DB_PATH
 
 
-ALLOWED_MEMORY_TYPES = {"preference", "trait", "event", "pattern"}
+ALLOWED_MEMORY_TYPES = {"preference", "trait", "event", "pattern", "identity"}
+
+ALLOWED_IDENTITY_KEYS = {
+    # user core identity
+    "user_name",
+    "user_age",
+    "user_birthday",
+    "user_birthdate",
+    "user_pronouns",
+    "user_gender_identity",
+    "user_sexual_orientation",
+    "user_relationship_status",
+    "user_nationality",
+    "user_ethnicity",
+    "user_religion",
+    "user_language",
+    "user_location",
+    "user_hometown",
+
+    # user life / education / work identity
+    "user_education_status",
+    "user_school",
+    "user_major",
+    "user_degree_goal",
+    "user_job",
+    "user_occupation",
+    "user_career_stage",
+
+    # user platform / background identity
+    "user_student_status",
+    "user_family_role",
+
+    # AI identity
+    "ai_name",
+    "ai_persona",
+    "ai_role",
+    "ai_relationship_frame",
+    "ai_style",
+
+    # fallback
+    "other_identity",
+}
+
 ALLOWED_PRIMARY_EMOTIONS = {
     "sad", "anxious", "angry", "fear",
     "calm", "positive", "mixed", "neutral", "unknown"
 }
 ALLOWED_SECONDARY_EMOTIONS = ALLOWED_PRIMARY_EMOTIONS | {"none"}
 
-# 获取当前时间（ISO格式）
-# 用于所有数据库时间字段统一格式
+
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
-# 获取数据库连接
-# 统一设置 row_factory，方便后续转 dict
+
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-# 初始化数据库结构（所有表 + 索引）
-# 只在程序启动时调用一次
+
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
-    # 原始消息表
     cur.execute("""
     CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,12 +84,12 @@ def init_db():
     ON messages(user_id, id)
     """)
 
-    # 结构化记忆表
     cur.execute("""
     CREATE TABLE IF NOT EXISTS memories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
         memory_type TEXT NOT NULL,
+        identity_key TEXT,
         content TEXT NOT NULL,
         importance REAL NOT NULL DEFAULT 0.5,
         confidence REAL NOT NULL DEFAULT 0.5,
@@ -61,6 +100,14 @@ def init_db():
     )
     """)
 
+    # 先检查旧表是否缺列
+    cur.execute("PRAGMA table_info(memories)")
+    columns = [row["name"] for row in cur.fetchall()]
+
+    if "identity_key" not in columns:
+        cur.execute("ALTER TABLE memories ADD COLUMN identity_key TEXT")
+
+    # 再建索引
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_memories_user_id_updated_at
     ON memories(user_id, updated_at DESC)
@@ -71,7 +118,11 @@ def init_db():
     ON memories(user_id, memory_type)
     """)
 
-    #interaction_signals 这次互动是什么性质
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_memories_user_id_identity_key
+    ON memories(user_id, identity_key)
+    """)
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS interaction_signals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,12 +140,12 @@ def init_db():
         FOREIGN KEY(trigger_message_id) REFERENCES messages(id)
     )
     """)
+
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_interaction_signals_user_id_id
     ON interaction_signals(user_id, id DESC)
     """)
 
-    # 关系状态表：每个 user 一行
     cur.execute("""
     CREATE TABLE IF NOT EXISTS relationship_state (
         user_id TEXT PRIMARY KEY,
@@ -106,7 +157,6 @@ def init_db():
     )
     """)
 
-    # 记忆总结游标：记录上次总结做到哪条 message
     cur.execute("""
     CREATE TABLE IF NOT EXISTS memory_summary_state (
         user_id TEXT PRIMARY KEY,
@@ -115,7 +165,6 @@ def init_db():
     )
     """)
 
-    # 情绪事件表：每轮 pending 聚合后的快照
     cur.execute("""
     CREATE TABLE IF NOT EXISTS emotion_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,7 +187,6 @@ def init_db():
     ON emotion_events(user_id, id DESC)
     """)
 
-    # 情绪总结缓存表：按需生成，可覆盖
     cur.execute("""
     CREATE TABLE IF NOT EXISTS emotion_summaries (
         user_id TEXT PRIMARY KEY,
@@ -154,7 +202,6 @@ def init_db():
     )
     """)
 
-    #会话总结
     cur.execute("""
     CREATE TABLE IF NOT EXISTS session_summaries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,8 +219,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# 保存一条对话消息（user / assistant / system）
-# 返回 message_id（后续可用于关联 memory / emotion / signals）
+
 def save_message(user_id: str, role: str, content: str) -> int:
     allowed_roles = {"user", "assistant", "system"}
     if role not in allowed_roles:
@@ -202,8 +248,7 @@ def save_message(user_id: str, role: str, content: str) -> int:
     finally:
         conn.close()
 
-# 获取最近 N 条消息（用于上下文）
-# 返回 list[(id, role, content, created_at)]
+
 def get_recent_messages(user_id: str, limit: int = 200):
     if not isinstance(limit, int) or limit <= 0:
         raise ValueError("limit must be a positive integer")
@@ -226,7 +271,7 @@ def get_recent_messages(user_id: str, limit: int = 200):
     finally:
         conn.close()
 
-# 获取某条消息之后的新消息（用于增量处理）
+
 def get_messages_after_id(user_id: str, last_message_id: int):
     conn = get_conn()
     try:
@@ -242,7 +287,7 @@ def get_messages_after_id(user_id: str, last_message_id: int):
     finally:
         conn.close()
 
-# 转换为 LLM 输入格式（chat messages）
+
 def rows_to_chat_messages(rows):
     messages = []
     for _id, role, content, created_at in rows:
@@ -253,15 +298,15 @@ def rows_to_chat_messages(rows):
             })
     return messages
 
-# 保存一条结构化记忆
-# memory_type: preference / trait / event / pattern
+
 def save_memory(
     user_id: str,
     memory_type: str,
     content: str,
     importance: float = 0.5,
     confidence: float = 0.5,
-    source_message_id: int | None = None
+    source_message_id: int | None = None,
+    identity_key: str | None = None,
 ) -> int:
     if memory_type not in ALLOWED_MEMORY_TYPES:
         raise ValueError(f"invalid memory_type: {memory_type}")
@@ -269,6 +314,17 @@ def save_memory(
     content = content.strip()
     if not content:
         raise ValueError("memory content cannot be empty")
+
+    if identity_key is not None:
+        identity_key = str(identity_key).strip()
+        if not identity_key:
+            identity_key = None
+
+    if memory_type == "identity":
+        if identity_key not in ALLOWED_IDENTITY_KEYS:
+            raise ValueError(f"invalid identity_key for identity memory: {identity_key}")
+    else:
+        identity_key = None
 
     importance = max(0.0, min(1.0, float(importance)))
     confidence = max(0.0, min(1.0, float(confidence)))
@@ -279,13 +335,13 @@ def save_memory(
         cur = conn.cursor()
         cur.execute("""
         INSERT INTO memories (
-            user_id, memory_type, content,
+            user_id, memory_type, identity_key, content,
             importance, confidence, source_message_id,
             created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            user_id, memory_type, content,
+            user_id, memory_type, identity_key, content,
             importance, confidence, source_message_id,
             ts, ts
         ))
@@ -295,12 +351,13 @@ def save_memory(
     finally:
         conn.close()
 
-# 更新已有记忆（支持部分字段更新）
+
 def update_memory(
     memory_id: int,
     content: str,
     importance: float | None = None,
-    confidence: float | None = None
+    confidence: float | None = None,
+    identity_key: str | None = None,
 ):
     content = content.strip()
     if not content:
@@ -310,42 +367,60 @@ def update_memory(
     try:
         cur = conn.cursor()
 
-        if importance is None and confidence is None:
-            cur.execute("""
-            UPDATE memories
-            SET content = ?, updated_at = ?
-            WHERE id = ?
-            """, (content, now_iso(), memory_id))
+        cur.execute("""
+        SELECT memory_type, importance, confidence, identity_key
+        FROM memories
+        WHERE id = ?
+        """, (memory_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError(f"memory not found: {memory_id}")
+
+        memory_type = row["memory_type"]
+
+        if identity_key is not None:
+            identity_key = str(identity_key).strip() or None
+
+        if memory_type == "identity":
+            if identity_key is None:
+                identity_key = row["identity_key"]
+            if identity_key not in ALLOWED_IDENTITY_KEYS:
+                raise ValueError(f"invalid identity_key for identity memory: {identity_key}")
         else:
-            if importance is None:
-                cur.execute("SELECT importance FROM memories WHERE id = ?", (memory_id,))
-                row = cur.fetchone()
-                importance = float(row["importance"]) if row else 0.5
-            if confidence is None:
-                cur.execute("SELECT confidence FROM memories WHERE id = ?", (memory_id,))
-                row = cur.fetchone()
-                confidence = float(row["confidence"]) if row else 0.5
+            identity_key = None
 
-            importance = max(0.0, min(1.0, float(importance)))
-            confidence = max(0.0, min(1.0, float(confidence)))
+        if importance is None:
+            importance = float(row["importance"])
+        if confidence is None:
+            confidence = float(row["confidence"])
 
-            cur.execute("""
-            UPDATE memories
-            SET content = ?, importance = ?, confidence = ?, updated_at = ?
-            WHERE id = ?
-            """, (content, importance, confidence, now_iso(), memory_id))
+        importance = max(0.0, min(1.0, float(importance)))
+        confidence = max(0.0, min(1.0, float(confidence)))
+
+        cur.execute("""
+        UPDATE memories
+        SET content = ?, identity_key = ?, importance = ?, confidence = ?, updated_at = ?
+        WHERE id = ?
+        """, (
+            content,
+            identity_key,
+            importance,
+            confidence,
+            now_iso(),
+            memory_id,
+        ))
 
         conn.commit()
     finally:
         conn.close()
 
-# 获取重要记忆（用于 prompt）
+
 def get_memories(user_id: str, limit: int = 10):
     conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute("""
-        SELECT id, user_id, memory_type, content, importance, confidence,
+        SELECT id, user_id, memory_type, identity_key, content, importance, confidence,
                source_message_id, created_at, updated_at
         FROM memories
         WHERE user_id = ?
@@ -358,13 +433,13 @@ def get_memories(user_id: str, limit: int = 10):
     finally:
         conn.close()
 
-# 获取最近记忆（用于去重 / merge）
+
 def get_recent_memories_for_dedup(user_id: str, limit: int = 30):
     conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute("""
-        SELECT id, user_id, memory_type, content, importance, confidence,
+        SELECT id, user_id, memory_type, identity_key, content, importance, confidence,
                source_message_id, created_at, updated_at
         FROM memories
         WHERE user_id = ?
@@ -376,7 +451,29 @@ def get_recent_memories_for_dedup(user_id: str, limit: int = 30):
     finally:
         conn.close()
 
-# 获取用户当前关系状态
+
+def get_identity_memory_by_key(user_id: str, identity_key: str) -> dict | None:
+    identity_key = str(identity_key or "").strip()
+    if not identity_key:
+        return None
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT id, user_id, memory_type, identity_key, content, importance, confidence,
+               source_message_id, created_at, updated_at
+        FROM memories
+        WHERE user_id = ? AND memory_type = 'identity' AND identity_key = ?
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        """, (user_id, identity_key))
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def get_relationship_state(user_id: str) -> dict:
     conn = get_conn()
     try:
@@ -419,7 +516,7 @@ def get_relationship_state(user_id: str) -> dict:
     finally:
         conn.close()
 
-# 插入或更新关系状态
+
 def upsert_relationship_state(
     user_id: str,
     familiarity: float,
@@ -727,7 +824,7 @@ def get_emotion_summary_row(user_id: str) -> dict | None:
     finally:
         conn.close()
 
-# 判断情绪总结是否过期
+
 def emotion_summary_is_stale(user_id: str) -> bool:
     summary = get_emotion_summary_row(user_id)
     latest_event = get_latest_emotion_event(user_id)
@@ -740,7 +837,7 @@ def emotion_summary_is_stale(user_id: str) -> bool:
 
     return int(latest_event["id"]) > int(summary.get("source_last_event_id", 0))
 
-# 工具函数：限制 float 在范围内
+
 def _clamp_float(value, min_value: float, max_value: float, default: float = 0.0) -> float:
     try:
         value = float(value)
@@ -748,16 +845,16 @@ def _clamp_float(value, min_value: float, max_value: float, default: float = 0.0
         value = default
     return max(min_value, min(max_value, value))
 
-# 保存一次互动信号（核心输入层）
+
 def save_interaction_signal(
     user_id: str,
     trigger_message_id: int | None = None,
-    openness: float = 0.0,      # openness: 用户是否开放表达
-    warmth: float = 0.0,        # warmth: 是否有情感温度
-    engagement: float = 0.0,    # engagement: 是否持续互动
-    reliance: float = 0.0,      # reliance: 是否依赖AI
-    respect: float = 0.0,       # respect: 是否尊重AI
-    rejection: float = 0.0,     # rejection: 是否拒绝/疏远
+    openness: float = 0.0,
+    warmth: float = 0.0,
+    engagement: float = 0.0,
+    reliance: float = 0.0,
+    respect: float = 0.0,
+    rejection: float = 0.0,
     confidence: float = 0.0,
     reason_summary: str = ""
 ) -> int:
@@ -815,7 +912,7 @@ def save_interaction_signal(
     finally:
         conn.close()
 
-# 获取最近20条互动信号
+
 def get_recent_interaction_signals(user_id: str, limit: int = 20):
     if not isinstance(limit, int) or limit <= 0:
         raise ValueError("limit must be a positive integer")
@@ -839,10 +936,11 @@ def get_recent_interaction_signals(user_id: str, limit: int = 20):
     finally:
         conn.close()
 
-# 获取最新一条互动信号
+
 def get_latest_interaction_signal(user_id: str) -> dict | None:
     rows = get_recent_interaction_signals(user_id, limit=1)
     return rows[0] if rows else None
+
 
 def save_session_summary(
     user_id: str,

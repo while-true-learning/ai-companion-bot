@@ -233,28 +233,12 @@ def process_emotion(
     user_id: str,
     pending_messages: list[dict],
     recent_rows: Optional[list] = None,
-    trigger_message_id: int | None = None,
 ) -> dict:
-    pending_text = merge_pending_text(pending_messages)
-
     result = detect_current_emotion(
         client=client,
         pending_messages=pending_messages,
         recent_rows=recent_rows,
     )
-
-    save_emotion_event(
-        user_id=user_id,
-        source_text=pending_text,
-        primary_emotion=result["primary_emotion"],
-        secondary_emotion=result["secondary_emotion"],
-        fine_grained=result["fine_grained"],
-        intensity=result["intensity"],
-        confidence=result["confidence"],
-        reason_summary=result["reason"],
-        trigger_message_id=trigger_message_id
-    )
-
     return result
 
 def build_emotion_summary(
