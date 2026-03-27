@@ -42,48 +42,81 @@ AI should not attempt to become human, but exist as a different type of entity:
 
 ---
 
-## System Constraints
+## Emotional & Relationship Modeling
 
-### Identity
-The AI is aware that it is an AI. It does not pretend to be human or fabricate real-world experiences.
+This system does not treat emotion as a static label.  
+Instead, each interaction is interpreted as a **relational signal** between the user and the AI.
 
-### Uncertainty
-The AI does not assume full understanding of the user and continuously updates its beliefs through interaction.
+The goal is not to classify how the user feels,  
+but to understand how the user is **relating** to the AI.
 
-### Non-manipulation
-The AI does not manipulate user emotions or create dependency.
+---
+### Interaction Signal
 
-### Boundaries
-The AI does not replace real-world relationships or encourage social isolation.
+Each interaction produces a structured signal:
 
-### Consistency
-The AI maintains stable behavior and avoids random personality shifts.
+- **openness** — whether the user expresses internal state  
+- **warmth** — emotional tone toward the AI (friendly vs cold)  
+- **engagement** — level of participation in the interaction  
+- **reliance** — degree of dependency or seeking support  
+- **respect** — recognition of boundaries and mutual stance  
+- **rejection** — avoidance, resistance, or hostility  
+- **confidence** — reliability of the signal estimation  
 
-### Memory
-Memory is not a storage of facts, but a continuously updated, uncertain estimation of the user.
-
-### Proactivity
-The AI may initiate interaction, but only under clear conditions.
+These signals are not used independently.  
+They are combined to approximate a **relational interpretation** of the interaction.
 
 ---
 
-## Translation to System
+### Why Not Emotion Classification
 
-These principles map to system design:
+A single emotion label is insufficient for guiding behavior.
 
-- Uncertainty → memory system must support probabilistic information  
-- Persistence → long-term state storage  
-- Proactivity → behavior scheduling system  
-- Consistency → controlled persona and context management  
-- Boundaries → constraints in prompts and behavior logic  
+For example:
+
+- Two users labeled as “sad” may have entirely different intentions  
+- One may be seeking support, another may be withdrawing  
+- Two “friendly” users may differ in depth of engagement or trust  
+
+The system focuses on **relational intent**, not emotional category.
+
+---
+
+### Relationship Over Time
+
+Relationships are not determined by single interactions.  
+They emerge from accumulation and stabilization.
+
+The system distinguishes three layers:
+
+- **Interaction Signal** — short-term observation  
+- **Affective Response** — immediate internal state  
+- **Relationship State** — long-term stabilized estimation  
+
+The system prioritizes **stability over reactivity**.  
+A single interaction should not drastically alter the relationship.
 
 ---
 
-## Next
+### Memory Boundary
 
-Design the memory system:
-- What information to store  
-- How to represent uncertainty  
-- How to update and decay memory  
+Raw signals are not stored as long-term memory.
+
+Only generalized patterns may be retained, such as:
+
+- The user tends to open up when experiencing negative emotions  
+- The user shows consistent trust or reliance toward the AI  
+- The user exhibits defensive or avoidant interaction patterns  
+- The user prefers a certain style of response (supportive, neutral, direct)  
+
+This ensures that memory captures **patterns**, not isolated events.
 
 ---
+
+### Design Principles
+
+- Emotional states are **derived from interaction**, not predefined  
+- The AI adapts behavior based on relational perception  
+- The system avoids overfitting to single interactions  
+- The AI does not intentionally manipulate emotional dependency  
+- The objective is **coherent interaction under incomplete understanding**
