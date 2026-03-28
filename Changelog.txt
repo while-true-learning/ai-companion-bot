@@ -1,2 +1,7 @@
-重构记忆提取逻辑，明确区分用户身份信息（identity）与普通记忆（pattern / preference 等）
-新增 identity 类型记忆的自动识别与结构化输出（由模型直接分类）
+新增：长期记忆调用决策机制（Long-term Memory Decider）
+新增 decide_use_long_term_memory，用于判断当前轮是否需要加载长期记忆
+判断依据：pending + recent history 是否足以支撑回复
+支持识别：
+“你还记得…” / “之前说过…”
+模糊回指（那个 / 上次那个 / 之前提过的）
+默认保守策略，避免过度加载 memory

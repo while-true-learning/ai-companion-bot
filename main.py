@@ -1,6 +1,6 @@
 from config import OPENAI_API_KEY, USER_ID
 from emotion import process_emotion, get_emotion_summary
-from decider import decide_use_emotion_summary
+from decider import decide_use_emotion_summary, decide_use_long_term_memory
 from relation import process_interaction_signal
 from db import (
     init_db,
@@ -12,6 +12,7 @@ from db import (
     save_emotion_event,
     get_recent_messages,
     save_session_summary,
+    get_memories
 )
 from idle_manager import IdleManager
 from ai_client import client, generate_reply
@@ -92,6 +93,7 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
         )
 
         emotion_summary = None
+        long_term_memories = None
         decision = decide_use_emotion_summary(
             client=client,
             pending_messages=pending_messages,
@@ -107,6 +109,17 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
                 force_refresh=False,
             )
             print(f"[EMOTION SUMMARY] loaded -> {emotion_summary.get('summary_text', '')}")
+
+        memory_decision = decide_use_long_term_memory(
+            client=client,
+            pending_messages=pending_messages,
+            recent_rows=recent_rows,
+        )
+        print(f"[LONG TERM MEMORY DECIDER] {memory_decision}")
+
+        if memory_decision["use_long_term_memory"]:
+            long_term_memories = get_memories(user_id, limit=12)
+            print(f"[LONG TERM MEMORIES] loaded -> {len(long_term_memories)}")
 
         # 2. 再把 pending 写入 messages
         last_user_message_id = save_pending_user_messages(user_id, pending_messages)
@@ -147,7 +160,9 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
         )
 
         # 4. 生成回复
-        reply = generate_reply(user_id, emotion_summary=emotion_summary)
+        reply = generate_reply(user_id,
+                emotion_summary=emotion_summary,
+                long_term_memories=long_term_memories)
         _send_assistant_reply(user_id, reply)
 
     except Exception as e:

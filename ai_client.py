@@ -37,7 +37,49 @@ def build_emotion_context(summary: dict) -> str:
 """.strip()
 
 
-def generate_reply(user_id: str, emotion_summary: dict | None = None) -> str:
+def build_long_term_memory_context(memories: list[dict] | None) -> str:
+    if not memories:
+        return ""
+
+    lines = []
+    for m in memories:
+        try:
+            memory_type = str(m.get("memory_type", "") or "").strip()
+            content = str(m.get("content", "") or "").strip()
+            importance = m.get("importance", "")
+
+            if not content:
+                continue
+
+            if memory_type:
+                lines.append(f"- [{memory_type}] {content}")
+            else:
+                lines.append(f"- {content}")
+        except Exception:
+            continue
+
+    if not lines:
+        return ""
+
+    return f"""
+以下是可供参考的长期记忆（仅在确实有帮助时自然使用，不要机械复述）：
+
+{chr(10).join(lines)}
+
+使用规则：
+- 只在与当前对话直接相关时再用
+- 不要把记忆逐条复述给用户
+- 不要说“我查到”“根据长期记忆”
+- 应该像你本来就记得这些事
+- 如果当前对话不需要，就忽略这些内容
+""".strip()
+
+
+def generate_reply(
+    user_id: str,
+    emotion_summary: dict | None = None,
+    long_term_memories: list[dict] | None = None,
+) -> str:
     recent_rows = get_recent_messages(user_id, limit=CONTEXT_LIMIT)
     history = rows_to_chat_messages(recent_rows)
 
@@ -59,6 +101,13 @@ def generate_reply(user_id: str, emotion_summary: dict | None = None) -> str:
             "role": "system",
             "content": build_emotion_context(emotion_summary)
         })
+
+    if long_term_memories:
+        messages.append({
+            "role": "system",
+            "content": build_long_term_memory_context(long_term_memories)
+        })
+
     messages.extend(history)
 
     response = client.chat.completions.create(

@@ -4,18 +4,13 @@ from typing import Optional
 from config import MODEL_DECIDER
 
 
-# 默认返回结果
-# 当模型调用失败、JSON 解析失败或信息不足时，保守地返回 false。
-def _default_result(reason: str = "") -> dict:
+def _default_result(flag_name: str, reason: str = "") -> dict:
     return {
-        "use_emotion_summary": False,
+        flag_name: False,
         "confidence": 0.0,
-        "reason": reason or "默认不调用情绪总结"
+        "reason": reason or "默认不调用"
     }
 
-
-# 格式化数据库里的历史消息
-# recent_rows 应该只包含“本轮之前”的历史，不包含当前 pending。
 def _format_recent_rows(recent_rows: Optional[list], max_items: int = 8) -> str:
     if not recent_rows:
         return "无"
@@ -39,8 +34,6 @@ def _format_recent_rows(recent_rows: Optional[list], max_items: int = 8) -> str:
     return "\n".join(lines) if lines else "无"
 
 
-# 格式化本轮 pending 消息
-# pending_messages 是当前轮尚未入库的内容，应该作为本次判断的重点。
 def _format_pending_messages(pending_messages: Optional[list]) -> str:
     if not pending_messages:
         return "无"
@@ -65,8 +58,6 @@ def _format_pending_messages(pending_messages: Optional[list]) -> str:
     return "\n".join(lines) if lines else "无"
 
 
-# 合并本轮 pending 文本
-# 用于让模型明确知道“这一轮用户到底说了什么”。
 def _merge_pending_text(pending_messages: Optional[list]) -> str:
     if not pending_messages:
         return ""
@@ -83,8 +74,6 @@ def _merge_pending_text(pending_messages: Optional[list]) -> str:
     return " ".join(parts).strip()
 
 
-# 从模型原始输出中提取 JSON 文本
-# 兼容模型偶尔输出解释文字再包一个 JSON 的情况。
 def _extract_json_text(raw: str) -> str:
     raw = (raw or "").strip()
 
@@ -101,17 +90,17 @@ def _extract_json_text(raw: str) -> str:
     raise ValueError("未找到 JSON 对象")
 
 
-# 决定是否需要额外读取“用户近期情绪总结”
-# 逻辑：
-# - pending_messages = 当前轮内容（重点）
-# - recent_rows = db 历史（辅助）
-# - 如果当前轮已经足够清晰，通常不需要情绪总结
-# - 只有当前轮带有模糊、趋势、反复、持续状态特征时，才更可能返回 true
-def decide_use_emotion_summary(
+def _run_binary_decider(
     client,
+    *,
     pending_messages: list[dict],
-    recent_rows: Optional[list] = None,
-    model_name: Optional[str] = None,
+    recent_rows: Optional[list],
+    model_name: Optional[str],
+    flag_name: str,
+    target_name: str,
+    rules_text: str,
+    empty_reason: str = "当前轮 pending 为空",
+    low_confidence_threshold: float = 0.35,
 ) -> dict:
     model_name = model_name or MODEL_DECIDER
 
@@ -120,38 +109,23 @@ def decide_use_emotion_summary(
     history_text = _format_recent_rows(recent_rows)
 
     if not pending_text:
-        return _default_result("当前轮 pending 为空")
+        return _default_result(flag_name, empty_reason)
 
-    system_prompt = """
+    system_prompt = f"""
 你是一个对话前置决策器。
-你的唯一任务是判断：这次回复用户之前，是否需要额外读取“用户近期情绪总结”。
+你的唯一任务是判断：这次回复用户之前，是否需要额外读取“{target_name}”。
 
 你必须只输出 JSON，不能输出任何额外文字。
 
 输出格式严格为：
-{
-  "use_emotion_summary": true,
+{{
+  "{flag_name}": true,
   "confidence": 0.0,
   "reason": "一句简短中文解释"
-}
+}}
 
 判断原则：
-
-1. 默认应当保守，默认 false，不要轻易调用情绪总结。
-2. 只有在“当前 pending 轮内容本身不足以自然回复”，而且“近期情绪状态可能明显帮助理解和回应”时，才输出 true。
-3. 以下情况更倾向于 true：
-   - 用户在谈最近状态、持续状态、重复模式、情绪趋势
-   - 用户表达模糊但带明显情绪负载，例如“还是这样”“我又开始了”“我不开心”
-   - 用户在问自己最近怎么了、为什么总这样、是不是一直如此
-   - 只看当前轮内容不够，结合近期情绪总结会明显改善回复质量
-4. 以下情况更倾向于 false：
-   - 当前轮上下文已经足够清楚
-   - 普通闲聊、事实陈述、信息问答、代码/作业/翻译类问题
-   - 单次具体事件本身已足够理解，不需要额外历史
-   - 调用情绪总结不会显著改善回复
-5. 不要因为用户出现单个情绪词就轻易输出 true。
-6. 以当前 pending 轮为主，历史上下文只辅助判断。
-7. reason 必须简短。
+{rules_text}
 """.strip()
 
     user_prompt = f"""
@@ -176,14 +150,14 @@ def decide_use_emotion_summary(
         )
         raw = (response.choices[0].message.content or "").strip()
     except Exception as e:
-        return _default_result(f"调用失败: {e}")
+        return _default_result(flag_name, f"调用失败: {e}")
 
     try:
         data = json.loads(_extract_json_text(raw))
     except Exception:
-        return _default_result(f"模型输出不是合法 JSON: {raw[:120]}")
+        return _default_result(flag_name, f"模型输出不是合法 JSON: {raw[:120]}")
 
-    use_emotion_summary = bool(data.get("use_emotion_summary", False))
+    use_flag = bool(data.get(flag_name, False))
 
     try:
         confidence = float(data.get("confidence", 0.0))
@@ -193,12 +167,83 @@ def decide_use_emotion_summary(
 
     reason = str(data.get("reason", "") or "").strip()[:120]
 
-    # 保守兜底：低置信度时默认不用
-    if confidence < 0.35:
-        use_emotion_summary = False
+    if confidence < low_confidence_threshold:
+        use_flag = False
 
     return {
-        "use_emotion_summary": use_emotion_summary,
+        flag_name: use_flag,
         "confidence": confidence,
         "reason": reason or "无"
     }
+
+
+EMOTION_RULES = """
+1. 默认应当保守，默认 false，不要轻易调用情绪总结。
+2. 只有在“当前 pending 轮内容本身不足以自然回复”，而且“近期情绪状态可能明显帮助理解和回应”时，才输出 true。
+3. 以下情况更倾向于 true：
+   - 用户在谈最近状态、持续状态、重复模式、情绪趋势
+   - 用户表达模糊但带明显情绪负载，例如“还是这样”“我又开始了”“我不开心”
+   - 用户在问自己最近怎么了、为什么总这样、是不是一直如此
+   - 只看当前轮内容不够，结合近期情绪总结会明显改善回复质量
+4. 以下情况更倾向于 false：
+   - 当前轮上下文已经足够清楚
+   - 普通闲聊、事实陈述、信息问答、代码/作业/翻译类问题
+   - 单次具体事件本身已足够理解，不需要额外历史
+   - 调用情绪总结不会显著改善回复
+5. 不要因为用户出现单个情绪词就轻易输出 true。
+6. 以当前 pending 轮为主，历史上下文只辅助判断。
+7. reason 必须简短。
+""".strip()
+
+
+LONG_TERM_MEMORY_RULES = """
+1. 默认保守，默认 false，不要轻易调用长期记忆。
+2. 只有在“当前 pending + 最近历史”不足以支撑自然回复时，才更倾向于 true。
+3. 以下情况更倾向于 true：
+   - 用户明确提到“你还记得……吗”“你记不记得……”“之前我说过……”
+   - 用户在引用过去谈过的人、事、偏好、身份信息，但当前上下文里没有
+   - 用户使用“那个”“上次那个”“之前提过的”“我以前和你说过”这类回指，当前历史不足以解析
+   - 如果读取长期记忆，会明显提升理解与连续性
+4. 以下情况更倾向于 false：
+   - 当前轮内容已经足够清楚
+   - 最近历史里已经能找到足够上下文
+   - 普通问答、闲聊、代码、翻译、作业等，不依赖长期记忆
+   - 读取长期记忆不会显著改善回复
+5. 不要因为出现单个“记得”二字就机械输出 true，要结合是否真的缺上下文判断。
+6. 以当前 pending 为主，recent history 为辅助。
+7. reason 必须简短。
+""".strip()
+
+
+def decide_use_emotion_summary(
+    client,
+    pending_messages: list[dict],
+    recent_rows: Optional[list] = None,
+    model_name: Optional[str] = None,
+) -> dict:
+    return _run_binary_decider(
+        client,
+        pending_messages=pending_messages,
+        recent_rows=recent_rows,
+        model_name=model_name,
+        flag_name="use_emotion_summary",
+        target_name="用户近期情绪总结",
+        rules_text=EMOTION_RULES,
+    )
+
+
+def decide_use_long_term_memory(
+    client,
+    pending_messages: list[dict],
+    recent_rows: Optional[list] = None,
+    model_name: Optional[str] = None,
+) -> dict:
+    return _run_binary_decider(
+        client,
+        pending_messages=pending_messages,
+        recent_rows=recent_rows,
+        model_name=model_name,
+        flag_name="use_long_term_memory",
+        target_name="长期记忆",
+        rules_text=LONG_TERM_MEMORY_RULES,
+    )
