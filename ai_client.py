@@ -1,6 +1,7 @@
 from openai import OpenAI
 from config import OPENAI_API_KEY, MODEL_REPLY, CONTEXT_LIMIT
-from db import get_recent_messages, rows_to_chat_messages
+from db import get_recent_messages, rows_to_chat_messages, get_relationship_state
+from relation import build_relationship_context_with_llm
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -138,6 +139,56 @@ def build_long_term_memory_context(memories: list[dict] | None) -> str:
 - 如果当前对话不需要，就忽略这些内容
 """.strip()
 
+def build_user_identity_context(memories: list[dict] | None) -> str:
+    if not memories:
+        return ""
+
+    identity_map = {}
+
+    for m in memories:
+        if m.get("memory_type") != "identity":
+            continue
+
+        key = str(m.get("identity_key") or "").strip()
+        content = str(m.get("content") or "").strip()
+
+        if not key or not content:
+            continue
+
+        # 每个 identity_key 只保留最新一条（你已经在 db 层做过 merge）
+        identity_map[key] = content
+
+    if not identity_map:
+        return ""
+
+    lines = []
+
+    # 你可以控制展示哪些 key（避免太多噪音）
+    important_keys = [
+        "user_name",
+        "user_school",
+        "user_major",
+        "user_location",
+        "user_student_status",
+    ]
+
+    for k in important_keys:
+        if k in identity_map:
+            lines.append(f"- {identity_map[k]}")
+
+    # 兜底：如果上面没选中，就随便拿几条
+    if not lines:
+        for v in list(identity_map.values())[:5]:
+            lines.append(f"- {v}")
+
+    return (
+        "以下是关于用户的身份信息（仅在自然情况下隐性参考，不要复述）：\n\n"
+        + "\n".join(lines)
+        + "\n\n使用规则：\n"
+        "- 不要逐条复述\n"
+        "- 不要说“你之前说过”\n"
+        "- 应该像你本来就知道这些一样自然使用"
+    )
 
 def generate_reply(
     user_id: str,
@@ -146,6 +197,13 @@ def generate_reply(
 ) -> str:
     ai_profile = build_ai_profile(long_term_memories)
     ai_profile_context = build_ai_profile_context(ai_profile)
+    relationship_state = get_relationship_state(user_id)
+    relationship_context = build_relationship_context_with_llm(
+        client=client,
+        relationship_state=relationship_state,
+    )
+    user_identity_context = build_user_identity_context(long_term_memories)
+
     recent_rows = get_recent_messages(user_id, limit=CONTEXT_LIMIT)
     history = rows_to_chat_messages(recent_rows)
 
@@ -158,12 +216,27 @@ def generate_reply(
         "如果用户只说了一点点内容，回复可以非常短，比如一句追问。"
         "避免使用过度标准化的话术。"
         "不要自称真人。"
+        "你可以自然表现出稳定的态度和连续性，但不要直接说你读取了记忆、关系或情绪记录。"
     )
+
     messages = [{"role": "system", "content": system_prompt}]
+
+    if user_identity_context:
+        messages.append({
+            "role": "system",
+            "content": user_identity_context
+        })
+
     if ai_profile_context:
         messages.append({
             "role": "system",
             "content": ai_profile_context
+        })
+
+    if relationship_context:
+        messages.append({
+            "role": "system",
+            "content": relationship_context
         })
 
     if emotion_summary:

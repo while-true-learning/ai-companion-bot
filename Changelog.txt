@@ -1,2 +1,3 @@
-在主程序添加了relationship_update
-在回复里添加了ai_profile
+Added user identity context into reply generation
+Replaced rule-based relationship tone control with LLM-driven style inference
+Improved response naturalness and consistency using identity + relationship signals

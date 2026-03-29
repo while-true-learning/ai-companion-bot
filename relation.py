@@ -1,6 +1,6 @@
 import json
 
-from config import MODEL_SUMMARIZE, CONTEXT_LIMIT
+from config import MODEL_SUMMARIZE, MODEL_DECIDER, CONTEXT_LIMIT
 from db import (
     get_relationship_state,
     upsert_relationship_state,
@@ -150,12 +150,6 @@ reveals about how the user is relating to the AI right now.
 2）少量更早的历史对话
 判断用户此刻是如何与 AI 发生互动的。
 
-You are NOT doing general emotion analysis.
-你不是在做普通情绪识别。
-
-You are NOT extracting long-term memory.
-你不是在提取长期记忆。
-
 You are extracting structured interaction_signals.
 你要提取的是结构化 interaction_signals。
 
@@ -165,27 +159,21 @@ You are extracting structured interaction_signals.
 openness:
 How much the user is opening up, exposing inner thoughts, feelings, or personal information.
 用户是否在袒露内心、感受、想法或个人信息。
-
 warmth:
 How much friendliness, softness, affection, or emotional closeness is directed toward the AI.
 用户是否对 AI 表现出友好、柔和、亲近或情感温度。
-
 engagement:
 How much the user is actively continuing, expanding, or investing in the interaction.
 用户是否在主动延续、推进、投入这段互动。
-
 reliance:
 How much the user is leaning on the AI for comfort, support, understanding, or presence.
 用户是否在把 AI 当作支持、理解、安慰或陪伴的对象。
-
 respect:
 How cooperative, sincere, and non-dismissive the user's attitude is toward the AI.
 用户对 AI 是否表现出合作、真诚、尊重，而不是敷衍或轻蔑。
-
 rejection:
 How much the user is distancing, resisting, shutting down, dismissing, or pushing the AI away.
 用户是否在疏远、抗拒、打断、否定或推开 AI。
-
 confidence:
 How confident you are in your own extraction.
 你对本次提取结果本身的把握程度。
@@ -198,26 +186,11 @@ How confident you are in your own extraction.
 
 2. Prioritize the current pending round.
    以当前 pending 轮次为判断重点。
-
-3. Use earlier history only for disambiguation.
-   更早历史仅用于消歧，不要盖过本轮内容。
-
-4. A sad message does not automatically mean high reliance.
-   难过不自动等于依赖 AI。
-
-5. A long message does not automatically mean high warmth.
-   消息长不自动等于对 AI 有温度。
-
-6. Asking a task question may still have low warmth but decent respect.
-   功能型提问可以 warmth 很低，但 respect 不一定低。
-
-7. Dry, brief, or withdrawn responses may lower engagement.
+3. Dry, brief, or withdrawn responses may lower engagement.
    简短、冷淡、收缩的回应可能意味着 engagement 偏低。
-
-8. Hostile, dismissive, impatient, or avoidant language should raise rejection.
+4. Hostile, dismissive, impatient, or avoidant language should raise rejection.
    敌意、轻蔑、不耐烦、回避，都应提高 rejection。
-
-9. Be conservative. Do not overread romance or attachment.
+5. Be conservative. Do not overread romance or attachment.
    保守判断，不要过度脑补浪漫或依恋。
 
 --------------------------------
@@ -367,8 +340,7 @@ How much this bond is becoming a psychological support anchor.
 --------------------------------
 [Important rules / 关键规则]
 
-1. Be conservative. Small changes are better than dramatic jumps.
-   保守更新，小幅变化优先。
+1.   保守更新，小幅变化优先。
 
 2. Prioritize the current round, but use recent context for disambiguation.
    以本轮为主，历史只做辅助判断。
@@ -376,22 +348,19 @@ How much this bond is becoming a psychological support anchor.
 3. Do not infer romance unless strongly justified.
    不要轻易脑补浪漫或恋爱倾向。
 
-4. Sadness alone does not imply dependency.
-   难过本身不自动意味着 dependency 上升。
-
-5. Functional/task-oriented interaction may raise familiarity slightly, but often not affection.
+4. Functional/task-oriented interaction may raise familiarity slightly, but often not affection.
    功能型对话可能略微提升 familiarity，但通常不明显提升 affection。
 
-6. Respect and sincerity can increase trust even when warmth is low.
+5. Respect and sincerity can increase trust even when warmth is low.
    即使 warmth 低，真诚和合作也能提升 trust。
 
-7. Rejection or hostility should reduce trust/affection more than familiarity.
+6. Rejection or hostility should reduce trust/affection more than familiarity.
    抗拒或敌意通常更应降低 trust / affection，而不是主要降低 familiarity。
 
-8. If the signal confidence is low, reduce update magnitude.
+7. If the signal confidence is low, reduce update magnitude.
    如果 signal 置信度低，应降低变化幅度。
 
-9. Output deltas, not final states.
+8. Output deltas, not final states.
    输出的是变化量，不是最终状态值。
 
 --------------------------------
@@ -437,6 +406,77 @@ You must output valid JSON only, with no extra text.
 
     return _normalize_relationship_update_item(data)
 
+def build_relationship_context_with_llm(
+    client,
+    relationship_state: dict | None,
+) -> str:
+    if not relationship_state:
+        return ""
+
+    familiarity = float(relationship_state.get("familiarity", 0.0) or 0.0)
+    trust = float(relationship_state.get("trust", 0.0) or 0.0)
+    affection = float(relationship_state.get("affection", 0.0) or 0.0)
+    dependency = float(relationship_state.get("dependency", 0.0) or 0.0)
+
+    system_prompt = """
+你是一个“关系状态 -> 说话态度”解释器。
+
+你的任务：
+根据 relationship_state，生成一小段给回复模型使用的“态度说明”。
+
+目标不是分析关系本身，
+而是告诉回复模型这一轮应该用什么态度说话。
+
+要求：
+- 输出的是“说话态度提示词”，不是解释报告
+- 不要复述数值
+- 不要写成分析文
+- 不要分很多条，尽量压缩成一小段自然说明
+- 重点关注：亲近程度、语气温度、表达克制程度、是否更稳定、是否更笃定
+- dependency 高时，只能体现为稳定陪伴感，不能鼓励依赖
+- trust 低时，不要替用户下判断，不要说得太满
+- affection 高时，可以稍微更柔和，但不要肉麻
+- 整体风格要自然、克制、可直接放进 system prompt
+
+只输出 JSON：
+
+{
+  "relationship_context": "..."
+}
+""".strip()
+
+    user_prompt = json.dumps(
+        {
+            "relationship_state": {
+                "familiarity": familiarity,
+                "trust": trust,
+                "affection": affection,
+                "dependency": dependency,
+            }
+        },
+        ensure_ascii=False,
+    )
+
+    resp = client.chat.completions.create(
+        model=MODEL_DECIDER,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.2,
+        response_format={"type": "json_object"},
+    )
+
+    data = json.loads(resp.choices[0].message.content)
+    text = str(data.get("relationship_context", "") or "").strip()
+
+    if not text:
+        return ""
+
+    return (
+        "以下是当前关系状态对应的说话态度，请仅自然吸收，不要机械复述：\n\n"
+        + text
+    )
 
 # -----------------------------
 # 将 AI update 融合到 relationship_state
