@@ -2,7 +2,7 @@ import json
 import re
 from typing import Optional
 
-from config import MODEL_SUMMARIZE, MODEL_DECIDER
+from config import MODEL_SUMMARIZE, MODEL_DECIDER, CONTEXT_LIMIT
 from db import (
     save_emotion_event,
     get_recent_emotion_events,
@@ -244,7 +244,7 @@ def process_emotion(
 def build_emotion_summary(
     client,
     user_id: str,
-    limit: int = 30,
+    limit: int = CONTEXT_LIMIT,
 ) -> dict:
     model_name = MODEL_SUMMARIZE
     events = get_recent_emotion_events(user_id, limit=limit)
@@ -398,7 +398,7 @@ def build_emotion_summary(
 def get_emotion_summary(
     client,
     user_id: str,
-    limit: int = 30,
+    limit: int = CONTEXT_LIMIT,
     force_refresh: bool = False,
 ) -> dict:
     cached = get_emotion_summary_row(user_id)

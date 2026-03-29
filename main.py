@@ -1,4 +1,4 @@
-from config import OPENAI_API_KEY, USER_ID
+from config import OPENAI_API_KEY, USER_ID ,CONTEXT_LIMIT
 from emotion import process_emotion, get_emotion_summary
 from decider import decide_use_emotion_summary, decide_use_long_term_memory
 from relation import process_interaction_signal
@@ -12,7 +12,8 @@ from db import (
     save_emotion_event,
     get_recent_messages,
     save_session_summary,
-    get_memories
+    get_memories,
+    save_relationship_update
 )
 from idle_manager import IdleManager
 from ai_client import client, generate_reply
@@ -67,7 +68,7 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
         if not merged_user_text:
             return
 
-        recent_rows = get_recent_messages(user_id, limit=8)
+        recent_rows = get_recent_messages(user_id, limit=CONTEXT_LIMIT)
 
         # 1. 先分析，不写库
         relation_result = process_interaction_signal(
@@ -76,6 +77,7 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
             pending_messages=pending_messages,
         )
         print(f"[INTERACTION SIGNAL] {relation_result['signal']}")
+        print(f"[RELATIONSHIP UPDATE] {relation_result.get('relationship_update')}")
         print(f"[RELATIONSHIP STATE] {relation_result['relationship_state']}")
 
         emotion_result = process_emotion(
@@ -91,9 +93,11 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
             user_id=user_id,
             pending_messages=pending_messages,
         )
+        print(f"[MEMORY ACTIONS] {memory_actions}")
 
         emotion_summary = None
         long_term_memories = None
+
         decision = decide_use_emotion_summary(
             client=client,
             pending_messages=pending_messages,
@@ -118,16 +122,17 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
         print(f"[LONG TERM MEMORY DECIDER] {memory_decision}")
 
         if memory_decision["use_long_term_memory"]:
-            long_term_memories = get_memories(user_id, limit=12)
+            long_term_memories = get_memories(user_id, limit=CONTEXT_LIMIT)
             print(f"[LONG TERM MEMORIES] loaded -> {len(long_term_memories)}")
 
         # 2. 再把 pending 写入 messages
         last_user_message_id = save_pending_user_messages(user_id, pending_messages)
         print(f"[PENDING SAVED] last_user_message_id={last_user_message_id}")
 
-        # 3. 现在才正式写 interaction_signal / emotion_event
+        # 3. 现在才正式写 interaction_signal / emotion_event / memory
         if last_user_message_id is not None:
             signal = relation_result["signal"]
+
             save_interaction_signal(
                 user_id=user_id,
                 trigger_message_id=last_user_message_id,
@@ -152,17 +157,35 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
                 confidence=emotion_result["confidence"],
                 reason_summary=emotion_result["reason"],
             )
-        apply_memory_actions(
-            user_id=user_id,
-            actions=memory_actions,
-            source_message_id=last_user_message_id,
-            log_prefix="[MEMORY]",
-        )
+
+            apply_memory_actions(
+                user_id=user_id,
+                actions=memory_actions,
+                source_message_id=last_user_message_id,
+                log_prefix="[MEMORY]",
+            )
+
+            relationship_update = relation_result.get("relationship_update")
+            if relationship_update:
+                save_relationship_update(
+                    user_id=user_id,
+                    trigger_message_id=last_user_message_id,
+                    familiarity_delta=relationship_update["familiarity_delta"],
+                    trust_delta=relationship_update["trust_delta"],
+                    affection_delta=relationship_update["affection_delta"],
+                    dependency_delta=relationship_update["dependency_delta"],
+                    confidence=relationship_update["confidence"],
+                    reason_summary=relationship_update["reason_summary"],
+                )
+        else:
+            print("[WARN] pending 已分析，但未成功写入 messages，跳过 signal/emotion/memory 入库")
 
         # 4. 生成回复
-        reply = generate_reply(user_id,
-                emotion_summary=emotion_summary,
-                long_term_memories=long_term_memories)
+        reply = generate_reply(
+            user_id,
+            emotion_summary=emotion_summary,
+            long_term_memories=long_term_memories,
+        )
         _send_assistant_reply(user_id, reply)
 
     except Exception as e:
@@ -225,7 +248,7 @@ def on_summary_due(user_id: str, pending_messages: list[dict], meta: dict):
         emotion_summary = get_emotion_summary(
             client=client,
             user_id=user_id,
-            limit=30,
+            limit=30,  #情绪总结边界
             force_refresh=True,
         )
         print("[EMOTION SUMMARY @ 5MIN]", emotion_summary)

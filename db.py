@@ -70,6 +70,31 @@ def init_db():
     cur = conn.cursor()
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS relationship_updates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            trigger_message_id INTEGER,
+        
+            familiarity_delta REAL NOT NULL,
+            trust_delta REAL NOT NULL,
+            affection_delta REAL NOT NULL,
+            dependency_delta REAL NOT NULL,
+        
+            confidence REAL NOT NULL,
+            reason_summary TEXT NOT NULL DEFAULT '',
+        
+            created_at TEXT NOT NULL,
+        
+            FOREIGN KEY(trigger_message_id) REFERENCES messages(id)
+        )
+        """)
+
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_relationship_updates_user_id_id
+        ON relationship_updates(user_id, id DESC);
+        """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
@@ -983,12 +1008,66 @@ def save_session_summary(
             ts,
         ),
     )
-
     conn.commit()
     summary_id = cur.lastrowid
     conn.close()
     return summary_id
 
+def save_relationship_update(
+    user_id: str,
+    trigger_message_id: int | None,
+    familiarity_delta: float,
+    trust_delta: float,
+    affection_delta: float,
+    dependency_delta: float,
+    confidence: float,
+    reason_summary: str = "",
+) -> int:
+
+    user_id = str(user_id).strip()
+    if not user_id:
+        raise ValueError("user_id cannot be empty")
+
+    familiarity_delta = float(familiarity_delta)
+    trust_delta = float(trust_delta)
+    affection_delta = float(affection_delta)
+    dependency_delta = float(dependency_delta)
+    confidence = max(0.0, min(1.0, float(confidence)))
+
+    reason_summary = str(reason_summary or "").strip()[:120]
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+        INSERT INTO relationship_updates (
+            user_id,
+            trigger_message_id,
+            familiarity_delta,
+            trust_delta,
+            affection_delta,
+            dependency_delta,
+            confidence,
+            reason_summary,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            trigger_message_id,
+            familiarity_delta,
+            trust_delta,
+            affection_delta,
+            dependency_delta,
+            confidence,
+            reason_summary,
+            now_iso()
+        ))
+        rid = cur.lastrowid
+        conn.commit()
+        return rid
+    finally:
+        conn.close()
 
 def get_context_bundle(
     user_id: str,

@@ -4,6 +4,70 @@ from db import get_recent_messages, rows_to_chat_messages
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+def build_ai_profile(memories: list[dict] | None) -> dict:
+    if not memories:
+        return {}
+
+    profile = {
+        "name": None,
+        "persona": None,
+        "role": None,
+        "relationship": None,
+        "style": None,
+    }
+
+    key_map = {
+        "ai_name": "name",
+        "ai_persona": "persona",
+        "ai_role": "role",
+        "ai_relationship_frame": "relationship",
+        "ai_style": "style",
+    }
+
+    for m in memories:
+        if m.get("memory_type") != "identity":
+            continue
+
+        identity_key = m.get("identity_key")
+        target = key_map.get(identity_key)
+
+        if not target:
+            continue
+
+        profile[target] = m.get("content")
+
+    return profile
+
+def build_ai_profile_context(profile: dict) -> str:
+    if not profile:
+        return ""
+
+    lines = []
+
+    if profile.get("name"):
+        lines.append(f"名称：{profile['name']}")
+    if profile.get("persona"):
+        lines.append(f"人设：{profile['persona']}")
+    if profile.get("role"):
+        lines.append(f"角色：{profile['role']}")
+    if profile.get("relationship"):
+        lines.append(f"关系定位：{profile['relationship']}")
+    if profile.get("style"):
+        lines.append(f"风格：{profile['style']}")
+
+    if not lines:
+        return ""
+
+    return f"""
+以下是当前AI的自我设定（必须始终保持一致）：
+
+{chr(10).join(lines)}
+
+规则：
+- 这是你的“自我”，不是参考信息
+- 回复必须符合这些设定
+- 不要提到这些设定来自哪里
+""".strip()
 
 def build_emotion_context(summary: dict) -> str:
     if not summary:
@@ -80,6 +144,8 @@ def generate_reply(
     emotion_summary: dict | None = None,
     long_term_memories: list[dict] | None = None,
 ) -> str:
+    ai_profile = build_ai_profile(long_term_memories)
+    ai_profile_context = build_ai_profile_context(ai_profile)
     recent_rows = get_recent_messages(user_id, limit=CONTEXT_LIMIT)
     history = rows_to_chat_messages(recent_rows)
 
@@ -93,8 +159,12 @@ def generate_reply(
         "避免使用过度标准化的话术。"
         "不要自称真人。"
     )
-
     messages = [{"role": "system", "content": system_prompt}]
+    if ai_profile_context:
+        messages.append({
+            "role": "system",
+            "content": ai_profile_context
+        })
 
     if emotion_summary:
         messages.append({

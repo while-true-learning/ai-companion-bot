@@ -1,7 +1,7 @@
 import json
 import re
 from typing import Optional
-from config import MODEL_DECIDER
+from config import MODEL_DECIDER, CONTEXT_LIMIT
 
 
 def _default_result(flag_name: str, reason: str = "") -> dict:
@@ -11,7 +11,7 @@ def _default_result(flag_name: str, reason: str = "") -> dict:
         "reason": reason or "默认不调用"
     }
 
-def _format_recent_rows(recent_rows: Optional[list], max_items: int = 8) -> str:
+def _format_recent_rows(recent_rows: Optional[list], max_items: int = CONTEXT_LIMIT) -> str: #通过最近x条历史做出绝对
     if not recent_rows:
         return "无"
 
@@ -197,21 +197,10 @@ EMOTION_RULES = """
 
 
 LONG_TERM_MEMORY_RULES = """
-1. 默认保守，默认 false，不要轻易调用长期记忆。
-2. 只有在“当前 pending + 最近历史”不足以支撑自然回复时，才更倾向于 true。
-3. 以下情况更倾向于 true：
-   - 用户明确提到“你还记得……吗”“你记不记得……”“之前我说过……”
-   - 用户在引用过去谈过的人、事、偏好、身份信息，但当前上下文里没有
-   - 用户使用“那个”“上次那个”“之前提过的”“我以前和你说过”这类回指，当前历史不足以解析
-   - 如果读取长期记忆，会明显提升理解与连续性
-4. 以下情况更倾向于 false：
-   - 当前轮内容已经足够清楚
-   - 最近历史里已经能找到足够上下文
-   - 普通问答、闲聊、代码、翻译、作业等，不依赖长期记忆
-   - 读取长期记忆不会显著改善回复
-5. 不要因为出现单个“记得”二字就机械输出 true，要结合是否真的缺上下文判断。
-6. 以当前 pending 为主，recent history 为辅助。
-7. reason 必须简短。
+1. 如果用户在询问“你是否记得某个信息”（如偏好、身份、过去说过的话），倾向 true。
+2. 如果用户引用过去内容，而当前 pending + recent history 无法解析，这意味着需要在数据库里查找 倾向 true。
+3. 如果当前上下文已经足够回答，返回 false。
+4. reason 简短。
 """.strip()
 
 

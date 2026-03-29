@@ -2,7 +2,7 @@
 
 import json
 
-from config import MODEL_DECIDER, MODEL_SUMMARIZE
+from config import MODEL_DECIDER, CONTEXT_LIMIT
 from db import (
     get_recent_memories_for_dedup,
     save_memory,
@@ -44,7 +44,7 @@ ALLOWED_IDENTITY_KEYS = {
 
 IMPORTANCE_THRESHOLD = 0.65
 CONFIDENCE_THRESHOLD = 0.70
-DEDUP_LOOKBACK_LIMIT = 20
+DEDUP_LOOKBACK_LIMIT = CONTEXT_LIMIT
 
 
 def _safe_float(value, default: float = 0.5) -> float:
