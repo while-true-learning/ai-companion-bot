@@ -29,13 +29,14 @@ class IdleManager:
                 self.pending_buffers[user_id] = []
 
             now = datetime.now()
+
             if user_id not in self.pending_meta or not self.pending_buffers[user_id]:
                 self.pending_meta[user_id] = {
-                    "first_pending_at": now,
-                    "last_user_message_at": now,
+                    "first_pending_at": now.isoformat(timespec="seconds"),
+                    "last_user_message_at": now.isoformat(timespec="seconds"),
                 }
             else:
-                self.pending_meta[user_id]["last_user_message_at"] = now
+                self.pending_meta[user_id]["last_user_message_at"] = now.isoformat(timespec="seconds")
 
             self.pending_buffers[user_id].append({
                 "role": "user",
@@ -43,7 +44,6 @@ class IdleManager:
                 "created_at": now.isoformat(timespec="seconds")
             })
 
-            # 重启 force reply timer
             old_force_timer = self.force_timers.get(user_id)
             if old_force_timer is not None:
                 old_force_timer.cancel()
@@ -56,7 +56,6 @@ class IdleManager:
             self.force_timers[user_id] = force_timer
             force_timer.start()
 
-            # 重启 summary timer
             old_summary_timer = self.summary_timers.get(user_id)
             if old_summary_timer is not None:
                 old_summary_timer.cancel()
@@ -104,8 +103,6 @@ class IdleManager:
                 force_timer.cancel()
             self.force_timers[user_id] = None
 
-            # 不清 summary timer
-            # 因为会话总结需要继续等待触发
 
     def cancel_timer(self, user_id: str):
         with self.lock:

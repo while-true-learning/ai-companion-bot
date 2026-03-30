@@ -194,6 +194,7 @@ def generate_reply(
     user_id: str,
     emotion_summary: dict | None = None,
     long_term_memories: list[dict] | None = None,
+    current_time_text: str | None = None,
 ) -> str:
     ai_profile = build_ai_profile(long_term_memories)
     ai_profile_context = build_ai_profile_context(ai_profile)
@@ -216,10 +217,15 @@ def generate_reply(
         "如果用户只说了一点点内容，回复可以非常短，比如一句追问。"
         "避免使用过度标准化的话术。"
         "不要自称真人。"
-        "你可以自然表现出稳定的态度和连续性，但不要直接说你读取了记忆、关系或情绪记录。"
+        "这是一个即时聊天程序，用户发送消息的时间与AI所在的当前时空一致"
     )
 
     messages = [{"role": "system", "content": system_prompt}]
+    if current_time_text:
+        messages.append({
+            "role": "system",
+            "content": f"当前真实时间：{current_time_text}"
+        })
 
     if user_identity_context:
         messages.append({

@@ -245,7 +245,7 @@ def init_db():
     conn.close()
 
 
-def save_message(user_id: str, role: str, content: str) -> int:
+def save_message(user_id: str, role: str, content: str, created_at: str | None = None) -> int:
     allowed_roles = {"user", "assistant", "system"}
     if role not in allowed_roles:
         raise ValueError(f"invalid role: {role}")
@@ -254,6 +254,7 @@ def save_message(user_id: str, role: str, content: str) -> int:
     if not content:
         raise ValueError("message content cannot be empty")
 
+    ts = created_at or now_iso()
     conn = get_conn()
     try:
         cur = conn.cursor()
@@ -264,7 +265,7 @@ def save_message(user_id: str, role: str, content: str) -> int:
             user_id,
             role,
             content,
-            now_iso()
+            ts
         ))
 
         message_id = cur.lastrowid

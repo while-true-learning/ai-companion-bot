@@ -113,6 +113,8 @@ def detect_current_emotion(
     client,
     pending_messages: list[dict],
     recent_rows: Optional[list] = None,
+    input_duration: float = 0.0,
+    last_gap: float = 0.0,
 ) -> dict:
     model_name = MODEL_DECIDER
 
@@ -152,17 +154,24 @@ def detect_current_emotion(
 8. 只分析当前状态，不给建议。
 9. reason 必须简短。
 """.strip()
-
     user_prompt = f"""
-数据库中的历史对话（不包括本轮）：
-{history_text}
+    数据库中的历史对话（不包括本轮）：
+    {history_text}
 
-当前 pending 轮内容（本轮重点）：
-{pending_context_text}
+    当前 pending 轮内容（本轮重点）：
+    {pending_context_text}
 
-当前轮合并后的核心文本：
-{pending_text}
-""".strip()
+    当前轮合并后的核心文本：
+    {pending_text}
+
+    【时间信息】
+    - 本轮输入持续时间：{input_duration:.2f} 秒
+    - 距离最后一句的停顿：{last_gap:.2f} 秒
+
+    【理解规则】
+    - 持续时间长 → 用户在连续表达或倾诉，应提高情绪强度判断权重
+    - 停顿时间长 → 用户可能在等待回应，应更明确判断当前情绪
+    """.strip()
 
     try:
         response = client.chat.completions.create(
@@ -233,11 +242,15 @@ def process_emotion(
     user_id: str,
     pending_messages: list[dict],
     recent_rows: Optional[list] = None,
+    input_duration: float = 0.0,
+    last_gap: float = 0.0,
 ) -> dict:
     result = detect_current_emotion(
         client=client,
         pending_messages=pending_messages,
         recent_rows=recent_rows,
+        input_duration=input_duration,
+        last_gap=last_gap,
     )
     return result
 

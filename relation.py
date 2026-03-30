@@ -122,6 +122,8 @@ def extract_interaction_signal_candidate(
     client,
     user_id: str,
     pending_messages: list[dict],
+    input_duration: float = 0.0,
+    last_gap: float = 0.0,
 ) -> dict:
     user_id = str(user_id).strip()
     if not user_id:
@@ -183,7 +185,6 @@ How confident you are in your own extraction.
 
 1. Focus on relationship-to-AI, not just mood.
    重点看“用户如何对待 AI”，而不只是用户心情如何。
-
 2. Prioritize the current pending round.
    以当前 pending 轮次为判断重点。
 3. Dry, brief, or withdrawn responses may lower engagement.
@@ -192,7 +193,10 @@ How confident you are in your own extraction.
    敌意、轻蔑、不耐烦、回避，都应提高 rejection。
 5. Be conservative. Do not overread romance or attachment.
    保守判断，不要过度脑补浪漫或依恋。
-
+6. Use timing as auxiliary evidence only.
+   时间信息只能作为辅助证据，不能脱离文本单独判断。
+7. Longer continuous input may indicate stronger engagement or openness, while very short input with very short pause may mean the user is not done yet.
+   更长的连续输入可能意味着更高的 engagement 或 openness；很短输入加很短停顿可能说明用户还没说完。
 --------------------------------
 [Output format / 输出格式]
 
@@ -215,7 +219,19 @@ You must output valid JSON only, with no extra text.
     messages.extend(context_messages[-20:])
     messages.append({
         "role": "user",
-        "content": "请基于以上内容，重点参考本轮 pending 用户输入，提取 interaction_signals，并按要求输出 JSON。"
+        "content": f"""
+    请基于以上内容，重点参考本轮 pending 用户输入，提取 interaction_signals，并按要求输出 JSON。
+
+    补充时间信息：
+    - 本轮输入持续时间：{input_duration:.2f} 秒
+    - 距离最后一句的停顿：{last_gap:.2f} 秒
+
+    时间理解规则：
+    - 输入持续时间较长，说明用户更可能在连续表达、展开倾诉或持续投入互动，可适度提高 openness、engagement、reliance 的判断权重
+    - 停顿时间较长，说明用户更可能已经说完并在等待 AI 回应，可适度提高 engagement 的判断权重
+    - 输入很短且停顿也很短，说明用户可能还没说完，应更保守，不要过度判断 openness、reliance 或 rejection
+    - 时间信息只是辅助，不能压过文本内容本身
+    """.strip()
     })
 
     resp = client.chat.completions.create(
@@ -264,6 +280,8 @@ def extract_relationship_update_candidate(
     user_id: str,
     pending_messages: list[dict],
     signal: dict,
+    input_duration: float = 0.0,
+    last_gap: float = 0.0,
 ) -> dict:
     user_id = str(user_id).strip()
     if not user_id:
@@ -362,6 +380,12 @@ How much this bond is becoming a psychological support anchor.
 
 8. Output deltas, not final states.
    输出的是变化量，不是最终状态值。
+   
+9. Timing can slightly affect update magnitude, but should not override textual evidence.
+   时间信息可以轻微影响更新幅度，但不能压过文本证据。
+   
+10. Longer sustained input may justify slightly stronger updates, while very short unfinished-looking input should keep updates smaller.
+   更长的持续输入可以支持略强一点的小幅更新；很短且像未说完的输入应让更新更小。
 
 --------------------------------
 [Output format / 输出格式]
@@ -389,6 +413,13 @@ You must output valid JSON only, with no extra text.
             f"current_state = {json.dumps(state_json, ensure_ascii=False)}\n"
             f"current_signal = {json.dumps(signal_json, ensure_ascii=False)}\n"
             f"signal_summary = {signal_summary}\n"
+            f"input_duration = {input_duration:.2f}\n"
+            f"last_gap = {last_gap:.2f}\n\n"
+            "时间理解规则：\n"
+            "- 输入持续时间较长，说明本轮互动更可能包含持续表达、倾诉或投入，可略微提高 familiarity、trust、dependency 的更新权重，但必须保守\n"
+            "- 停顿时间较长，说明用户更可能在等待 AI 回应，可视为本轮互动完成度更高，适度提高 engagement 对关系更新的影响\n"
+            "- 输入很短且停顿很短，通常不应引起较大的关系变化\n"
+            "- 时间信息只能辅助调节更新幅度，不能脱离文本内容和 current_signal 单独做出强判断\n"
         )
     })
 
@@ -537,11 +568,15 @@ def process_interaction_signal(
     client,
     user_id: str,
     pending_messages: list[dict],
+    input_duration: float = 0.0,
+    last_gap: float = 0.0,
 ) -> dict:
     signal = extract_interaction_signal_candidate(
         client=client,
         user_id=user_id,
         pending_messages=pending_messages,
+        input_duration=input_duration,
+        last_gap=last_gap,
     )
 
     relationship_update = extract_relationship_update_candidate(
@@ -549,6 +584,8 @@ def process_interaction_signal(
         user_id=user_id,
         pending_messages=pending_messages,
         signal=signal,
+        input_duration=input_duration,
+        last_gap=last_gap,
     )
 
     new_state = apply_ai_relationship_update(

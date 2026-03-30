@@ -1,3 +1,4 @@
+from datetime import datetime
 from config import OPENAI_API_KEY, USER_ID ,CONTEXT_LIMIT
 from emotion import process_emotion, get_emotion_summary
 from decider import decide_use_emotion_summary, decide_use_long_term_memory
@@ -30,16 +31,48 @@ idle_manager = IdleManager(
 # 输出 assistant 回复，并写入数据库
 def _send_assistant_reply(user_id: str, reply: str):
     print(f"\nAI: {reply}")
-    save_message(user_id, "assistant", reply)
+    save_message(
+        user_id,
+        "assistant",
+        reply,
+        created_at=datetime.now().isoformat(timespec="seconds")
+    )
 
 # 把本轮 pending 用户消息拼成一段文本
 # 用于 emotion / memory 这类按“本轮整体内容”分析的模块
-def merge_pending_messages(pending_messages: list[dict]) -> str:
-    return " ".join(
-        (msg.get("content", "") or "").strip()
-        for msg in pending_messages
-        if (msg.get("content", "") or "").strip()
-    ).strip()
+def merge_pending_messages(pending_messages: list[dict]) -> dict:
+    contents = []
+    times = []
+
+    for msg in pending_messages:
+        content = (msg.get("content", "") or "").strip()
+        created_at = msg.get("created_at")
+
+        if content:
+            contents.append(content)
+
+        if created_at:
+            try:
+                times.append(datetime.fromisoformat(created_at))
+            except Exception:
+                pass
+
+    merged_text = " ".join(contents).strip()
+
+    if times:
+        duration = (max(times) - min(times)).total_seconds()
+        last_gap = (datetime.now() - max(times)).total_seconds()
+    else:
+        duration = 0
+        last_gap = 0
+
+    return {
+        "text": merged_text,
+        "duration": duration,
+        "last_gap": last_gap,
+        "first_created_at": times[0].isoformat() if times else None,
+        "last_created_at": times[-1].isoformat() if times else None,
+    }
 
 # 将本轮 pending 用户消息逐条写入数据库
 # 返回最后一条 user message 的 message_id；如果没有则返回 None
@@ -49,11 +82,17 @@ def save_pending_user_messages(user_id: str, pending_messages: list[dict]) -> in
     for msg in pending_messages:
         role = str(msg.get("role", "user")).strip()
         content = (msg.get("content", "") or "").strip()
+        created_at = msg.get("created_at")
 
         if role != "user" or not content:
             continue
 
-        last_message_id = save_message(user_id, "user", content)
+        last_message_id = save_message(
+            user_id=user_id,
+            role="user",
+            content=content,
+            created_at=created_at,
+        )
 
     return last_message_id
 
@@ -61,20 +100,28 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
     print(f"\n[FORCE REPLY] 用户 {user_id} 已达到 {idle_manager.force_reply_after_seconds} 秒等待上限")
     print("[PENDING MESSAGES]")
     for msg in pending_messages:
-        print("-", msg["content"])
+        print(f"- [{msg.get('created_at')}] {msg.get('content')}")
 
     try:
-        merged_user_text = merge_pending_messages(pending_messages)
+        merged = merge_pending_messages(pending_messages)
+
+        merged_user_text = merged["text"]
+        input_duration = merged["duration"]
+        last_gap = merged["last_gap"]
+        now = datetime.now()
+        current_time_text = now.strftime("%Y-%m-%d %H:%M:%S")
         if not merged_user_text:
             return
 
         recent_rows = get_recent_messages(user_id, limit=CONTEXT_LIMIT)
-
+        print(f"[MERGED TEXT] {merged_user_text}")
         # 1. 先分析，不写库
         relation_result = process_interaction_signal(
             client=client,
             user_id=user_id,
             pending_messages=pending_messages,
+            input_duration=input_duration,
+            last_gap=last_gap,
         )
         print(f"[INTERACTION SIGNAL] {relation_result['signal']}")
         print(f"[RELATIONSHIP UPDATE] {relation_result.get('relationship_update')}")
@@ -85,6 +132,7 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
             user_id=user_id,
             pending_messages=pending_messages,
             recent_rows=recent_rows,
+            input_duration=input_duration,
         )
         print(f"[EMOTION] {emotion_result}")
 
@@ -93,7 +141,7 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
             user_id=user_id,
             pending_messages=pending_messages,
         )
-        print(f"[MEMORY ACTIONS] {memory_actions}")
+        #print(f"[MEMORY ACTIONS] {memory_actions}")
 
         emotion_summary = None
         long_term_memories = None
@@ -185,6 +233,7 @@ def on_force_reply(user_id: str, pending_messages: list[dict], meta: dict):
             user_id,
             emotion_summary=emotion_summary,
             long_term_memories=long_term_memories,
+            current_time_text=current_time_text,
         )
         _send_assistant_reply(user_id, reply)
 

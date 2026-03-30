@@ -197,10 +197,13 @@ EMOTION_RULES = """
 
 
 LONG_TERM_MEMORY_RULES = """
+你是一个是否使用长期记忆的决策器
 1. 如果用户在询问“你是否记得某个信息”（如偏好、身份、过去说过的话），倾向 true。
-2. 如果用户引用过去内容，而当前 pending + recent history 无法解析，这意味着需要在数据库里查找 倾向 true。
+2. 如果用户引用过去内容，并且当前 pending + recent history 无法回答，这意味着需要在记忆库库里查找 倾向 true。
 3. 如果当前上下文已经足够回答，返回 false。
-4. reason 简短。
+4. 如果用户没有询问问题或没有引用过去内容 返回 false
+5. 如果不需要额外信息就可以回答，返回 false
+6. reason 简短。
 """.strip()
 
 

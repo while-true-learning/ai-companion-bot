@@ -1,3 +1,3 @@
-Added user identity context into reply generation
-Replaced rule-based relationship tone control with LLM-driven style inference
-Improved response naturalness and consistency using identity + relationship signals
+本次更新引入了完整的时间感知能力，使系统从纯文本驱动升级为时间驱动交互。
+在数据层，pending message 增加了 created_at 并贯通到数据库，保证用户输入的真实时间被记录。
+在行为层，新增 input_duration 与 last_gap 计算，用于刻画用户输入节奏，并传入 emotion 与 relation 模块，作为辅助判断依据。
